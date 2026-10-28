@@ -1,0 +1,70 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © teshmi9z
+
+//@version=6
+indicator("HA", overlay=true)
+customBuyColor = color.new(#00FFFF, 0)
+customSellColor = color.new(#FF0000, 0)
+var string candleGroup = 'Candlestick Settings'
+candleType = input.string('Linear Regression', 'Candle Type', options = ['Candlesticks', 'Heikin Ashi', 'Linear Regression'], group = candleGroup, tooltip = 'Choose the type of candles to display. This does not impact signal calculations.')
+lrcLength = input.int(6, 'Linear Regression Length', minval = 1, group = candleGroup, tooltip = 'Length for Linear Regression calculations. Lower values are more responsive but noisier.')
+
+// Heikin Ashi
+calculateHA() =>
+    var haOpen = 0.0
+    var haHigh = 0.0
+    var haLow = 0.0
+    var haClose = 0.0
+
+    newHaClose = (open + high + low + close) / 4
+    newHaOpen = na(haOpen[1]) ? (open + close) / 2 : (haOpen[1] + haClose[1]) / 2
+    newHaHigh = math.max(high, math.max(newHaOpen, newHaClose))
+    newHaLow = math.min(low, math.min(newHaOpen, newHaClose))
+
+    haClose := newHaClose
+    haOpen := newHaOpen
+    haHigh := newHaHigh
+    haLow := newHaLow
+
+    [newHaOpen, newHaHigh, newHaLow, newHaClose]
+
+[oHA, hHA, lHA, cHA] = calculateHA()
+
+var float displayOpen = na
+var float displayHigh = na
+var float displayLow = na
+var float displayClose = na
+
+if candleType == 'Candlesticks'
+    displayOpen := open
+    displayHigh := high
+    displayLow := low
+    displayClose := close
+else if candleType == 'Heikin Ashi'
+    displayOpen := oHA
+    displayHigh := hHA
+    displayLow := lHA
+    displayClose := cHA
+else if candleType == 'Linear Regression'
+    displayOpen := ta.linreg(open, lrcLength, 0)
+    displayHigh := ta.linreg(high, lrcLength, 0)
+    displayLow := ta.linreg(low, lrcLength, 0)
+    displayClose := ta.linreg(close, lrcLength, 0)
+
+// Determine coloring
+isBullishCandle = displayClose > displayOpen
+isBearishCandle = displayClose < displayOpen
+// ===========================================================================================================
+// CANDLE PLOTTING
+// ===========================================================================================================
+
+candleColor = isBullishCandle ? customBuyColor : customSellColor
+
+plotcandle(candleType != 'Candlesticks' ? displayOpen : na,
+           candleType != 'Candlesticks' ? displayHigh : na,
+           candleType != 'Candlesticks' ? displayLow : na,
+           candleType != 'Candlesticks' ? displayClose : na,
+           title = 'Alternative Candles',
+           color = candleType != 'Candlesticks' ? candleColor : na,
+           wickcolor = candleType != 'Candlesticks' ? candleColor : na,
+           bordercolor = candleType != 'Candlesticks' ? candleColor : na)

@@ -1,0 +1,27 @@
+// © teshmi9z
+
+//@version=5
+indicator("Imbalance", overlay=true,max_boxes_count=500)
+
+transparency = input.int(0, "FVG", minval=0, maxval=100, step=10)
+// règle d'origine : le corps de la bougie du milieu doit couvrir tout le trou (rate les gaps
+// d'ouverture et les bougies du milieu de l'autre couleur)
+strict = input.bool(false, "Seulement si le corps de la bougie du milieu couvre tout le trou (règle d'origine)")
+yellow_with_alpha = color.new(color.yellow, transparency)
+
+// Calcul du déséquilibre vers le haut
+topImbalance = not strict or (low[2] <= open[1] and high[0] >= close[1])
+topImbalanceSize = low[2] - high[0]
+
+// Calcul du déséquilibre vers le bas
+bottomImbalance = not strict or (high[2] >= open[1] and low[0] <= close[1])
+bottomImbalanceSize = low[0] - high[2]
+
+// Dessin des bougies jaunes pour les déséquilibres
+if topImbalance and topImbalanceSize > 0
+    box.new(bar_index[2], low[2], bar_index[2]+1,high[0], border_color=yellow_with_alpha, border_width=0, bgcolor=yellow_with_alpha)
+    //line.new(bar_index[2], low[2], bar_index[2], high[0], width=30,color=yellow_with_alpha)
+
+if bottomImbalance and bottomImbalanceSize > 0
+    box.new(bar_index[0], low[0], bar_index[0]+1, high[2], border_color=yellow_with_alpha, border_width=0, bgcolor=yellow_with_alpha)
+    //line.new(bar_index[0], low[0], bar_index[0], high[2], width=30, color=yellow_with_alpha)

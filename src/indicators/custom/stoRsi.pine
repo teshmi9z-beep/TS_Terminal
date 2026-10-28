@@ -1,0 +1,46 @@
+//@version=5
+indicator("Sto+RSI", overlay=false)
+
+
+// Paramètres de l'indicateur
+voir_sto=input.bool(true,title="Stochastic",group="STO",inline="st")
+length_K = input.int(200, title="K Length",group="STO",inline="st1")
+colorK= input(color.blue, title="",group="STO",inline="st1")
+k_width = input.int(1, title="Ep", minval=1,group="STO",inline="st1")
+length_D = input.int(200, title="D Smoothing",group="STO",inline="st2")
+//colorD= input(color.orange, title="",group="STO",inline="st2")
+
+d_width = input.int(1, title="Ep", minval=1,group="STO",inline="st2")
+smooth_K = input.int(3, title="Smooth K",group="STO",inline="st3")
+voirline=input.bool(true,title="Level",group="STO",inline="st4")
+upper_level = input.float(80, title="Up",group="STO",inline="st4" ,minval=50, maxval=100)
+lower_level = input.float(20, title="Low",group="STO",inline="st4" ,minval=0, maxval=50)
+voir_bg = input.bool(true,title="Background",group="STO",inline="st5")
+
+// Calcul du Stochastique
+k = ta.sma(ta.stoch(close, high, low, length_K), smooth_K)
+d = ta.sma(k, length_D)
+d_direction = d > d[1] ? 1 : d < d[1] ? -1 : 0
+d_color =  d_direction > 0 ? color.lime : color.red
+
+
+// Tracer les lignes K et D
+plot(voir_sto?k:na, title="K", color=colorK,linewidth=k_width)
+plot(voir_sto?d:na, title="D", color=d_color,linewidth=d_width)
+
+// Tracer les niveaux de surachat et de survente
+hline(voirline?upper_level:na, "Overbought", color=color.red, linestyle=hline.style_dashed)
+hline(voirline?lower_level:na, "Oversold", color=color.green, linestyle=hline.style_dashed)
+
+// Paramètres de l'indicateur RSI
+voirrsi= input.bool(true, title="RSI",group="RSI",inline="0")
+colorrsi= input(color.black, title="",group="RSI",inline="1")
+rsi_length = input.int(14,title="Period", minval=1,group="RSI",inline="1")
+rsi_width = input.int(1, title="Ep", minval=1,group="RSI",inline="1")
+voirlinersi=input.bool(true,title="Level",group="RSI",inline="2")
+upper_level_rsi = input.float(70, title="", group="RSI",inline="2",minval=50, maxval=100)
+lower_level_rsi = input.float(30, title="",group="RSI",inline="2", minval=0, maxval=50)
+rsi = ta.rsi(close, rsi_length)
+plot(voirrsi? rsi :na, title="RSI", color=colorrsi,linewidth=rsi_width)
+hline(voirlinersi?upper_level_rsi:na , "RSI Overbought", color=color.black, linestyle=hline.style_dashed)
+hline(voirlinersi?lower_level_rsi:na, "RSI Oversold", color=color.black, linestyle=hline.style_dashed)

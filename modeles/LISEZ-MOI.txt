@@ -1,0 +1,12 @@
+Modeles de trading (price action)
+
+captures\  : mets ici tes captures d'ecran de modeles qui marchent (et de ceux qui ont rate).
+             Nom conseille : ACTIF_UT_AAAA-MM-JJ_idee.png
+             exemple : XAUUSD_4h_2026-04-17_prise-de-liquidite.png
+             Si possible, marque sur l'image l'entree, le stop et la sortie.
+
+modeles-dow.html : 4 vrais trades des robots "Structure Dow" (3 gagnants, une serie de pertes),
+                   dessines depuis l'historique de la plateforme. Double-clic pour l'ouvrir.
+
+Ensuite, demande a Claude de regarder le dossier captures : il recharge les vraies bougies
+de chaque exemple, transforme le modele en regles et le teste depuis 2020 avec les vrais frais.

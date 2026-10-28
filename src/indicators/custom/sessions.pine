@@ -1,0 +1,96 @@
+//@version=5
+indicator("Sessions", overlay = true, max_bars_back = 500, max_lines_count = 500, max_boxes_count = 500, max_labels_count = 500)
+//Session A
+show_sesa = input(true, '', inline = 'sesa', group = 'Session A')
+sesa_txt = input('New York', '', inline = 'sesa', group = 'Session A')
+sesa_ses = input.session('1300-2200', '', inline = 'sesa', group = 'Session A')
+sesa_css = input.color(#ff5d00, '', inline = 'sesa', group = 'Session A')
+
+//Session B
+show_sesb = input(true, '', inline = 'sesb', group = 'Session B')
+sesb_txt = input('London', '', inline = 'sesb', group = 'Session B')
+sesb_ses = input.session('0700-1600', '', inline = 'sesb', group = 'Session B')
+sesb_css = input.color(#2157f3, '', inline = 'sesb', group = 'Session B')
+
+//Session C
+show_sesc = input(true, '', inline = 'sesc', group = 'Session C')
+sesc_txt = input('Tokyo', '', inline = 'sesc', group = 'Session C')
+sesc_ses = input.session('0000-0900', '', inline = 'sesc', group = 'Session C')
+sesc_css = input.color(#e91e63, '', inline = 'sesc', group = 'Session C')
+
+//Ranges Options
+bg_transp = input.float(90, 'Range Area Transparency', group = 'Ranges Settings')
+show_txt = input(true, 'Range Label', group = 'Ranges Settings')
+
+//Functions
+n = bar_index
+//Set session range
+get_range(session, session_name, session_css)=>
+    var t = 0
+    var max = high
+    var min = low
+    var box bx = na
+    var label lbl = na
+
+    if session > session[1]
+        t := time
+        max := high
+        min := low
+
+        bx := box.new(n, max, n, min
+          , bgcolor = color.new(session_css, bg_transp)
+          , border_style = line.style_dotted)
+
+        if show_txt
+            lbl := label.new(t, max, session_name
+              , xloc = xloc.bar_time
+              , textcolor = session_css
+              , style = label.style_label_down
+              , color = color.new(color.white, 100)
+              , size = size.tiny)
+
+    if session and session == session[1]
+        max := math.max(high, max)
+        min := math.min(low, min)
+
+        box.set_top(bx, max)
+        box.set_rightbottom(bx, n, min)
+        label.set_xy(lbl, int(math.avg(t, time)), max)
+
+
+
+    [session ? na : max, session ? na : min]
+
+
+//Sessions
+//-----------------------------------------------------------------------------{
+tf = timeframe.period
+is_sesa = math.sign(nz(time(tf, sesa_ses,'GMT+1')))
+is_sesb = math.sign(nz(time(tf, sesb_ses,'GMT+1')))
+is_sesc = math.sign(nz(time(tf, sesc_ses,'GMT+1')))
+
+//-----------------------------------------------------------------------------}
+//Overlays
+//-----------------------------------------------------------------------------{
+var float max_sesa = na
+var float min_sesa = na
+var float max_sesb = na
+var float min_sesb = na
+var float max_sesc = na
+var float min_sesc = na
+
+//Ranges
+if show_sesa
+    [max, min] = get_range(is_sesa, sesa_txt, sesa_css)
+    max_sesa := max
+    min_sesa := min
+
+if show_sesb
+    [max, min] = get_range(is_sesb, sesb_txt, sesb_css)
+    max_sesb := max
+    min_sesb := min
+
+if show_sesc
+    [max, min] = get_range(is_sesc, sesc_txt, sesc_css)
+    max_sesc := max
+    min_sesc := min

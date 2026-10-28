@@ -1,0 +1,50 @@
+// © teshmi9z
+//@version=5
+indicator("Imbalance Personnalisé", overlay=true, max_boxes_count=500)
+
+// --- PARAMÈTRES PERSONNALISABLES ---
+grp1 = "Déséquilibre Haussier (Bullish)"
+bullColor    = input.color(color.new(color.green, 80), "Couleur Fond", group=grp1)
+bullBorder   = input.color(color.green, "Couleur Bordure", group=grp1)
+
+grp2 = "Déséquilibre Baissier (Bearish)"
+bearColor    = input.color(color.new(color.red, 80), "Couleur Fond", group=grp2)
+bearBorder   = input.color(color.red, "Couleur Bordure", group=grp2)
+
+grp3 = "Style des Boîtes"
+borderWidth  = input.int(1, "Épaisseur Bordure", minval=0, group=grp3)
+showBorder   = input.bool(true, "Afficher la bordure", group=grp3)
+
+// --- LOGIQUE DE DÉTECTION (FVG Standard) ---
+
+// Un déséquilibre haussier (Bullish FVG) : Le bas de la bougie actuelle est plus haut que le haut d'il y a 2 bougies
+bullishFVG = low[0] > high[2]
+
+// Un déséquilibre baissier (Bearish FVG) : Le haut de la bougie actuelle est plus bas que le bas d'il y a 2 bougies
+bearishFVG = high[0] < low[2]
+
+// --- DESSIN DES BOÎTES ---
+
+// Couleur de bordure dynamique (si désactivée, on met la transparence à 100%)
+bColorBull = showBorder ? bullBorder : color.new(bullBorder, 100)
+bColorBear = showBorder ? bearBorder : color.new(bearBorder, 100)
+
+// Dessin pour les déséquilibres haussiers
+if bullishFVG
+    box.new(left=bar_index[2],
+           top=low[0],
+           right=bar_index,
+           bottom=high[2],
+           border_color=bColorBull,
+           border_width=borderWidth,
+           bgcolor=bullColor)
+
+// Dessin pour les déséquilibres baissiers
+if bearishFVG
+    box.new(left=bar_index[2],
+           top=low[2],
+           right=bar_index,
+           bottom=high[0],
+           border_color=bColorBear,
+           border_width=borderWidth,
+           bgcolor=bearColor)

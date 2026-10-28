@@ -1,0 +1,36 @@
+//@version=5
+indicator("Stoch Price Envelope [1-99] - No BB", overlay=true)
+
+// --- PARAMÈTRES ---
+k_period = input.int(200, "Période (Mémoire 200)", minval=1)
+smooth_k = input.int(3, "Lissage K", minval=1)
+d_period = input.int(200, "Période D (Signal)", minval=1)
+level_high = input.float(99.0, "Niveau Haut (%)")
+level_low = input.float(1.0, "Niveau Bas (%)")
+
+// --- CALCULS DES BORNES (HH / LL) ---
+hh = ta.highest(high, k_period)
+ll = ta.lowest(low, k_period)
+range_price = hh - ll
+
+// --- CALCUL STOCHASTIQUE CLASSIQUE (INTERNE) ---
+raw_k = 100 * (close - ll) / range_price
+smoothed_k = ta.sma(raw_k, smooth_k)
+d_signal = ta.sma(smoothed_k, d_period)
+
+// --- REVERSE ENGINEERING (PROJECTION SUR LE PRIX) ---
+price_99 = (level_high / 100) * range_price + ll
+price_01 = (level_low / 100) * range_price + ll
+price_mid = (50.0 / 100) * range_price + ll
+price_signal = (d_signal / 100) * range_price + ll
+
+// --- DÉTECTION DU MODE "ESCALIER" (TENDANCE) ---
+// Si le plus haut ou le plus bas historique des 200 bougies bouge, on est en tendance
+is_breaking_up = hh > hh[1]
+is_breaking_down = ll < ll[1]
+
+// --- AFFICHAGE DES LIGNES ---
+plot(price_99, "Plafond (99%)", color=color.new(color.red, 0), linewidth=2)
+plot(price_01, "Plancher (1%)", color=color.new(color.lime, 0), linewidth=2)
+plot(price_mid, "Milieu (50%)", color=color.new(color.orange, 50), linewidth=1, style=plot.style_stepline)
+plot(price_signal, "Signal Stoch", color=color.new(color.orange, 0), linewidth=2)

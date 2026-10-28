@@ -1,0 +1,73 @@
+//@version=5
+indicator("XAUUSD 19h - 1H Closed Ref", overlay=true, max_lines_count=500)
+
+// --- Condition d'unité de temps (Inférieur au Daily) ---
+isAllowed = timeframe.isintraday
+
+// --- Paramètres ---
+targetHour   = input.int(18, "Heure de la bougie (ex: 18 pour 18h-19h)", minval=0, maxval=23)
+candleColor  = input.color(color.new(#ff6803, 50), "Couleur Bougie cible")
+
+// --- Paramètres de Style ---
+highColorSetting = input.color(color.green, "Couleur High", group="Style High")
+highStyleSetting  = input.string("Solid", "Style High", options=["Solid", "Dashed", "Dotted"], group="Style High")
+lowColorSetting  = input.color(color.red, "Couleur Low", group="Style Low")
+lowStyleSetting   = input.string("Solid", "Style Low", options=["Solid", "Dashed", "Dotted"], group="Style Low")
+lineWidth        = input.int(2, "Épaisseur", minval=1)
+
+// --- Récupération des données 1H ---
+[h1h, l1h] = request.security(syminfo.tickerid, "60", [high[1], low[1]], lookahead=barmerge.lookahead_on)
+
+// --- Logique de détection ---
+var float refHigh = na
+var float refLow  = na
+var line lineH    = na
+var line lineL    = na
+var int bias      = 0
+
+isNewDay = ta.change(time("D"))
+
+// On utilise l'heure du graphique (hour)
+isClotureTarget = hour[1] == targetHour and hour != targetHour
+
+// On n'exécute la logique de création que si on est en Intraday
+if isAllowed and isClotureTarget
+    refHigh := h1h
+    refLow  := l1h
+    bias    := 0
+
+    // Dessin des segments
+    lineH := line.new(bar_index, refHigh, bar_index, refHigh, color=highColorSetting, width=lineWidth, style=(highStyleSetting == "Solid" ? line.style_solid : highStyleSetting == "Dashed" ? line.style_dashed : line.style_dotted))
+    lineL := line.new(bar_index, refLow, bar_index, refLow, color=lowColorSetting, width=lineWidth, style=(lowStyleSetting == "Solid" ? line.style_solid : lowStyleSetting == "Dashed" ? line.style_dashed : line.style_dotted))
+
+// Extension des lignes (uniquement si autorisé)
+if isAllowed and not na(refHigh) and not isNewDay
+    line.set_x2(lineH, bar_index)
+    line.set_x2(lineL, bar_index)
+
+// Définition du Biais
+if isAllowed and not na(refHigh)
+    if close > refHigh
+        bias := 1
+    else if close < refLow
+        bias := -1
+
+// Reset pour le lendemain
+if isNewDay
+    refHigh := na
+    refLow  := na
+    bias    := 0
+
+// --- Affichage ---
+
+// Background (seulement si isAllowed)
+bgcolor(isAllowed and bias == 1 ? color.new(highColorSetting, 90) : isAllowed and bias == -1 ? color.new(lowColorSetting, 90) : na)
+
+// Coloration des bougies (seulement si isAllowed)
+isInsideTarget = hour == targetHour
+barcolor(isAllowed and isInsideTarget ? candleColor : na)
+
+// Signaux (seulement si isAllowed)
+biasChanged = ta.change(bias)
+plotshape(isAllowed and biasChanged and bias == 1, "Breakout Haut", shape.triangleup, location.belowbar, color.green, size=size.small)
+plotshape(isAllowed and biasChanged and bias == -1, "Breakout Bas", shape.triangledown, location.abovebar, color.red, size=size.small)
