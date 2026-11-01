@@ -1,4 +1,4 @@
-import type { Candle, IndicatorConfig, IndicatorType } from '../types';
+import type { Candle, IndicatorConfig, IndicatorType, LineStyleName } from '../types';
 import type { LinePoint } from './math';
 
 export type PlotPoint = LinePoint & { color?: string };
@@ -53,6 +53,8 @@ export type Plot = {
   color: string;
   kind: 'line' | 'histogram' | 'candles' | 'hline' | 'markers' | 'boxes' | 'labels' | 'fill' | 'bgcolor';
   width?: number;
+  // a line drawn dotted or dashed (Style tab)
+  lineStyle?: LineStyleName;
   // Pine's plot.style_stepline
   step?: boolean;
   // for candles: the close of each candle, used by the legends; a NaN value

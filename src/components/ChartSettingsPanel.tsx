@@ -2,10 +2,8 @@ import { useStore } from '../store/store';
 import type { ChartSettings } from '../types';
 import { ColorSwatch } from './ColorPicker';
 import { QUICK_COLORS } from './colors';
+import { STYLE_LABELS, STYLE_ORDER } from './mainSeries';
 
-const STYLE_LABELS: Record<ChartSettings['candleStyle'], string> = {
-  candles: 'Bougies', bars: 'Barres', line: 'Ligne', area: 'Aire', heikin_ashi: 'Heikin Ashi',
-};
 
 type ColorKey = 'background' | 'gridColor' | 'upColor' | 'downColor' | 'borderUpColor' | 'borderDownColor' | 'wickUpColor' | 'wickDownColor';
 const COLOR_ROWS: [ColorKey, string][] = [
@@ -29,7 +27,7 @@ export default function ChartSettingsPanel({ onClose }: { onClose: () => void })
       <div className="modal cs-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-title">Style du graphique</div>
         <div className="settings-row">
-          {(['candles', 'heikin_ashi', 'bars', 'line', 'area'] as const).map((st) => (
+          {STYLE_ORDER.map((st) => (
             <button key={st} className={`pill-btn ${settings.candleStyle === st ? 'active' : ''}`} onClick={() => update({ candleStyle: st })}>
               {STYLE_LABELS[st]}
             </button>

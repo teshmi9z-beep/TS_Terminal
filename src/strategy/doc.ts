@@ -14,7 +14,7 @@ export type StrategyDoc = {
 
 // the same first test written as a TradingView strategy script
 export const MA_CROSS_PINE = `//@version=5
-strategy("Croisement MM 10/50", overlay=true, initial_capital=100000)
+strategy("Croisement MM 10/50", overlay=true, initial_capital=10000)
 
 // ---------- Paramètres
 rapide = input.int(10, "Moyenne rapide", minval=1)
@@ -69,7 +69,7 @@ export function newAssisted(name: string): StrategyDoc {
 }
 
 export const NEW_STRATEGY_CODE = `//@version=5
-strategy("Ma stratégie", overlay=true, initial_capital=100000, default_qty_type=strategy.percent_of_equity, default_qty_value=100)
+strategy("Ma stratégie", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=100)
 
 rapide = ta.ema(close, 9)
 lente = ta.ema(close, 21)

@@ -7,7 +7,7 @@ import LeftToolbar from './components/LeftToolbar';
 import RightSidebar from './components/RightSidebar';
 import LeftWatchlist from './components/LeftWatchlist';
 import BottomDock from './components/strategy/BottomDock';
-import BackgroundServices from './components/BackgroundServices';
+import BackgroundServices, { QuoteFeeder } from './components/BackgroundServices';
 import ChartContainer from './components/ChartContainer';
 import BottomBar from './components/BottomBar';
 import MultiChartGrid from './components/MultiChartGrid';
@@ -17,8 +17,11 @@ import IndicatorMenu from './components/IndicatorMenu';
 import ChartSettingsPanel from './components/ChartSettingsPanel';
 import SymbolInfoDialog from './components/SymbolInfoDialog';
 import OfflineDialog from './components/OfflineDialog';
+import BrokerDialog, { TradingSettingsDialog } from './components/BrokerDialog';
+import GuardsDialog from './components/GuardsDialog';
 import SymbolMenu from './components/SymbolMenu';
 import CodeViewer from './components/CodeViewer';
+import FloatingPineEditor from './components/FloatingPineEditor';
 import AlertDialog from './components/alerts/AlertDialog';
 import { addAlertAtPrice, addTextNote } from './components/symbolActions';
 import FavoritesToolbar from './components/FavoritesToolbar';
@@ -28,10 +31,12 @@ import { applyWorkspace } from './components/workspaces';
 import TabBar, { LayoutAutosave } from './components/tabs/TabBar';
 import HomePage from './components/tabs/HomePage';
 import ToolPage from './components/tabs/ToolPage';
-import { goToChart } from './components/tabs/tabActions';
+import { TOOL_LABELS, goToChart, openChartTab, openTool, showOnChart } from './components/tabs/tabActions';
+import { startToolWindow, startToolWindowHub } from './components/toolWindows';
 import { startPopoutHub, startPopoutReporter, startThemeSync } from './components/popouts';
 import { startChartLink } from './components/chartLink';
-import { useStore, POPOUT_ID } from './store/store';
+import { startListBackup } from './components/listBackup';
+import { useStore, POPOUT_ID, POPOUT_TOOL } from './store/store';
 import { useChartUi } from './store/chartUi';
 
 function Toast() {
@@ -72,20 +77,24 @@ function App() {
   const workspaceManagerOpen = useChartUi((s) => s.workspaceManagerOpen);
   const ticker = useStore((s) => s.symbol.ticker);
   const timeframe = useStore((s) => s.timeframe);
-  // detached windows always show their chart
+  // detached windows always show their chart, or the tool page dragged out of the tabs
   const tab = useStore((s) => (POPOUT_ID ? undefined : s.tabs.find((t) => t.id === s.activeTabId)));
-  const page = tab?.kind === 'home' ? 'home' : tab?.kind === 'tool' ? tab.tool ?? null : null;
+  const page = POPOUT_TOOL ?? (tab?.kind === 'home' ? 'home' : tab?.kind === 'tool' ? tab.tool ?? null : null);
 
   // detached windows report to the main one, which keeps the list of them
   useEffect(() => (POPOUT_ID ? startPopoutReporter() : startPopoutHub()), []);
+  // the main window's watchlists, saved on disk after each change
+  useEffect(() => (POPOUT_ID ? undefined : startListBackup()), []);
   // light / dark follows in every window
   useEffect(() => startThemeSync(), []);
   // linked charts (symbol, timeframe, scrolling) follow each other across windows
-  useEffect(() => startChartLink(), []);
+  useEffect(() => (POPOUT_TOOL ? undefined : startChartLink()), []);
+  // a tool window works on the main window's data; the main window takes its changes and opens its charts
+  useEffect(() => (POPOUT_TOOL ? startToolWindow() : POPOUT_ID ? undefined : startToolWindowHub({ showOnChart, goToChart, openChartTab, openTool })), []);
 
   // the window title tells the detached windows apart in the taskbar
   useEffect(() => {
-    document.title = POPOUT_ID ? `${ticker} · ${timeframe} — TeshTerminal` : 'TeshTerminal';
+    document.title = POPOUT_TOOL ? `${TOOL_LABELS[POPOUT_TOOL]} — TeshTerminal` : POPOUT_ID ? `${ticker} · ${timeframe} — TeshTerminal` : 'TeshTerminal';
   }, [ticker, timeframe]);
 
   // like TradingView: typing a letter anywhere opens the symbol search pre-filled
@@ -106,7 +115,7 @@ function App() {
       }
       const ui = useChartUi.getState();
       const st = useStore.getState();
-      if (!POPOUT_ID && st.tabs.find((x) => x.id === st.activeTabId)?.kind !== 'chart') return;
+      if (POPOUT_TOOL || (!POPOUT_ID && st.tabs.find((x) => x.id === st.activeTabId)?.kind !== 'chart')) return;
       if (e.ctrlKey || e.metaKey || e.altKey || ui.search.open || ui.dialog || ui.codeFor || ui.alertDraft) return;
       if (/^[a-zA-Z0-9]$/.test(e.key)) {
         e.preventDefault();
@@ -145,6 +154,7 @@ function App() {
         </>
       )}
       {!POPOUT_ID && <BackgroundServices />}
+      {POPOUT_TOOL && <QuoteFeeder />}
       {!POPOUT_ID && <PendingPopoutsBar />}
       {workspaceManagerOpen && <WorkspaceManager />}
       {searchOpen && <SymbolSearch />}
@@ -152,6 +162,10 @@ function App() {
       {dialog === 'settings' && <ChartSettingsPanel onClose={closeDialog} />}
       {dialog === 'symbolInfo' && <SymbolInfoDialog />}
       {dialog === 'offline' && <OfflineDialog onClose={closeDialog} />}
+      {dialog === 'brokers' && !POPOUT_ID && <BrokerDialog onClose={closeDialog} />}
+      {dialog === 'tradingSettings' && !POPOUT_ID && <TradingSettingsDialog onClose={closeDialog} />}
+      {dialog === 'guards' && !POPOUT_ID && <GuardsDialog onClose={closeDialog} />}
+      {!POPOUT_ID && <FloatingPineEditor />}
       {codeFor && <CodeViewer />}
       {alertDraft && !POPOUT_ID && <AlertDialog key={alertDraft.edit?.id ?? `${alertDraft.indicatorId ?? ''}:${alertDraft.plot ?? ''}`} />}
       <SymbolMenu />

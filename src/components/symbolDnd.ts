@@ -26,3 +26,8 @@ export function findSymbol(ticker: string): Symbol | null {
   for (const t of st.watchlists) for (const r of t.items) if (r.kind === 'asset' && r.data.ticker === ticker) return r.data;
   return null;
 }
+
+// the symbol of a 2 / 4 window chart or a free window: the one it was given (a stock of the
+// screener is in no list), else found by its ticker
+export const chartSymbol = (c: { ticker?: string; symbol?: Symbol }): Symbol | null =>
+  !c.ticker ? null : c.symbol?.ticker === c.ticker ? c.symbol : findSymbol(c.ticker);

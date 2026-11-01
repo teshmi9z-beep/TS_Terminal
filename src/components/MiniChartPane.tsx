@@ -1,37 +1,45 @@
 import { useEffect, useRef, useState } from 'react';
-import {
-  createChart, ColorType, CandlestickSeries,
-  type IChartApi, type ISeriesApi, type UTCTimestamp,
-} from 'lightweight-charts';
+import { createChart, ColorType, CrosshairMode, type IChartApi, type ISeriesApi, type SeriesType } from 'lightweight-charts';
 import { MiniIndicators } from './indicatorSeries';
+import { makeMainSeries, ohlcPoint, setSeriesBars, styleKeyOf, updateSeriesLast, STYLE_LABELS, STYLE_ORDER, type CandleStyle } from './mainSeries';
 import { COMPANION_EVENT } from '../indicators/companion';
 import { useStore } from '../store/store';
 import { useChartUi } from '../store/chartUi';
 import { SYMBOLS } from '../data/symbols';
 import { openFeed } from '../data/feeds';
-import { chartColors, pricePrecision, timeFormatters, isDailyTf, type ChartEngine } from './chartUtils';
-import { TIME_TIMEFRAMES, type Candle, type Timeframe } from '../types';
+import { chartColors, pricePrecision, timeFormatters, isDailyTf, wheelOnPriceAxis, type ChartEngine } from './chartUtils';
+import { TIME_TIMEFRAMES, type Candle, type Symbol, type Timeframe } from '../types';
 import { getDragSymbol, isSymbolDrag } from './symbolDnd';
 import { openPopout } from './popouts';
 import PaneOverlays from './PaneOverlays';
+import { syncCrosshair } from './crosshairSync';
 import { LOCALE } from '../i18n/lang';
 
-const bar = (c: Candle) => ({ time: c.time as UTCTimestamp, open: c.open, high: c.high, low: c.low, close: c.close });
-
 // A small chart of the 2 / 4 window layouts and of the free windows: its own symbol and
-// timeframe, with the main chart's indicators and the same legends and controls (eye,
+// timeframe, with the main chart's style, indicators and the same legends and controls (eye,
 // settings, code, delete, pane up / down / collapse / maximize).
 // The symbol and the timeframe are reported (onTickerChange / onTimeframeChange) so the layout keeps
-// them: a free window or a 2 / 4 window chart comes back as it was after the layout changed.
-export default function MiniChartPane({ initialTicker, initialTimeframe, onTickerChange, onTimeframeChange }: {
+// them: a free window or a 2 / 4 window chart comes back as it was after the layout changed. Changed
+// by the layout (the active chart of the 2 / 4 windows takes the symbol picked in a list), they follow.
+export default function MiniChartPane({ initialTicker, initialSymbol, initialTimeframe, initialStyle, onTickerChange, onTimeframeChange, onStyleChange, active, onActivate }: {
   initialTicker: string;
+  // the instrument itself, for one that is in no list (a stock picked in the screener)
+  initialSymbol?: Symbol;
   initialTimeframe?: Timeframe;
-  onTickerChange?: (t: string) => void;
+  // its own chart style (picked next to its timeframe), else the one of "Style du graphique"
+  initialStyle?: CandleStyle;
+  onTickerChange?: (t: string, sym?: Symbol) => void;
   onTimeframeChange?: (tf: Timeframe) => void;
+  onStyleChange?: (style: CandleStyle) => void;
+  // the chart of the 2 / 4 windows that the lists and the top bar change (outlined)
+  active?: boolean;
+  onActivate?: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const seriesRef = useRef<ISeriesApi<SeriesType> | null>(null);
+  // the Heikin Ashi bars, which the next live bar continues
+  const haRef = useRef<Candle[]>([]);
   // what the legends read, like the main chart's engine
   const engine = useRef<ChartEngine>({ chart: null, mainSeries: null, candles: [], indicators: [], precision: 2 });
   const indRef = useRef<MiniIndicators | null>(null);
@@ -57,6 +65,12 @@ export default function MiniChartPane({ initialTicker, initialTimeframe, onTicke
     return ok(tf) ? tf : '15m';
   });
   const changeTimeframe = (tf: Timeframe) => { setTimeframe(tf); onTimeframeChange?.(tf); };
+  const [ownStyle, setOwnStyle] = useState<CandleStyle | undefined>(initialStyle);
+  const style = ownStyle ?? chartSettings.candleStyle;
+  // read by the live bars, subscribed once per feed
+  const styleRef = useRef(style);
+  useEffect(() => { styleRef.current = style; }, [style]);
+  const changeStyle = (st: CandleStyle) => { setOwnStyle(st); onStyleChange?.(st); };
   // a chart opened on the main timeframe keeps it from now on
   useEffect(() => {
     if (initialTimeframe !== timeframe) onTimeframeChange?.(timeframe);
@@ -71,12 +85,18 @@ export default function MiniChartPane({ initialTicker, initialTimeframe, onTicke
   const [hidden, setHidden] = useState(false);
   const hiddenRef = useRef(hidden);
   hiddenRef.current = hidden;
-  const changeTicker = (t: string) => { setTicker(t); onTickerChange?.(t); };
+  const changeTicker = (t: string, sym?: Symbol) => { setTicker(t); onTickerChange?.(t, sym); };
+  useEffect(() => { setTicker(initialTicker); }, [initialTicker]);
+  useEffect(() => {
+    if (initialTimeframe && (TIME_TIMEFRAMES as readonly Timeframe[]).includes(initialTimeframe)) setTimeframe(initialTimeframe);
+  }, [initialTimeframe]);
 
-  // symbols from the built-in list plus anything added to a watchlist from the search
+  // symbols from the built-in list plus anything added to a watchlist from the search, and this
+  // chart's own (otherwise a stock of the screener is lost once the main chart shows another)
   const known = new Map(SYMBOLS.map((s) => [s.ticker, s]));
   for (const t of watchlists) for (const r of t.items) if (r.kind === 'asset' && !known.has(r.data.ticker)) known.set(r.data.ticker, r.data);
   if (!known.has(mainSymbol.ticker)) known.set(mainSymbol.ticker, mainSymbol);
+  if (initialSymbol && !known.has(initialSymbol.ticker)) known.set(initialSymbol.ticker, initialSymbol);
   const symbol = known.get(ticker);
 
   // pane heights, collapsed / maximized panes and hidden indicators, as on the main chart
@@ -120,17 +140,19 @@ export default function MiniChartPane({ initialTicker, initialTimeframe, onTicke
     const s = useStore.getState().chartSettings;
     const chart = createChart(el, {
       layout: { background: { type: ColorType.Solid, color: s.background }, textColor: colors.text, fontSize: 10, attributionLogo: false },
-      grid: { vertLines: { color: s.gridColor }, horzLines: { color: s.gridColor } },
+      grid: { vertLines: { color: s.gridColor, visible: s.showGrid }, horzLines: { color: s.gridColor, visible: s.showGrid } },
+      // free like the main chart's (the library's default sticks the horizontal line to the closes)
+      crosshair: {
+        mode: CrosshairMode.Normal,
+        vertLine: { color: colors.crossLine, labelBackgroundColor: colors.crossLabel },
+        horzLine: { color: colors.crossLine, labelBackgroundColor: colors.crossLabel },
+      },
       rightPriceScale: { borderColor: colors.border },
       timeScale: { borderColor: colors.border, timeVisible: true, secondsVisible: false, rightOffset: 6 },
       width: el.clientWidth,
       height: el.clientHeight,
     });
-    seriesRef.current = chart.addSeries(CandlestickSeries, {
-      upColor: s.upColor, downColor: s.downColor,
-      borderUpColor: s.borderUpColor ?? s.upColor, borderDownColor: s.borderDownColor ?? s.downColor,
-      wickUpColor: s.wickUpColor, wickDownColor: s.wickDownColor,
-    }, 0);
+    seriesRef.current = makeMainSeries(chart, s, styleRef.current);
     chartRef.current = chart;
     engine.current.chart = chart;
     engine.current.mainSeries = seriesRef.current;
@@ -139,8 +161,14 @@ export default function MiniChartPane({ initialTicker, initialTimeframe, onTicke
     chart.subscribeCrosshairMove((param) => setHoverTime(param.time != null && param.point ? (param.time as number) : null));
     const ro = new ResizeObserver(() => { chart.resize(el.clientWidth, el.clientHeight); layout(); });
     ro.observe(el);
+    // wheel over a price axis zooms that pane's prices instead of the time axis
+    const offWheel = wheelOnPriceAxis(chart, el, () => seriesRef.current?.priceScale());
+    // the time under the cursor shown on every other chart open (and theirs here)
+    const offCross = syncCrosshair(chart, el, () => engine.current.candles, () => seriesRef.current);
     return () => {
       ro.disconnect();
+      offWheel();
+      offCross();
       if (refreshTimer.current) clearTimeout(refreshTimer.current);
       chart.remove();
       chartRef.current = null; seriesRef.current = null; indRef.current = null;
@@ -153,14 +181,35 @@ export default function MiniChartPane({ initialTicker, initialTimeframe, onTicke
     const colors = chartColors(uiTheme);
     chartRef.current?.applyOptions({
       layout: { background: { type: ColorType.Solid, color: chartSettings.background }, textColor: colors.text },
-      grid: { vertLines: { color: chartSettings.gridColor }, horzLines: { color: chartSettings.gridColor } },
-    });
-    seriesRef.current?.applyOptions({
-      upColor: chartSettings.upColor, downColor: chartSettings.downColor,
-      borderUpColor: chartSettings.borderUpColor ?? chartSettings.upColor, borderDownColor: chartSettings.borderDownColor ?? chartSettings.downColor,
-      wickUpColor: chartSettings.wickUpColor, wickDownColor: chartSettings.wickDownColor,
+      grid: {
+        vertLines: { color: chartSettings.gridColor, visible: chartSettings.showGrid },
+        horzLines: { color: chartSettings.gridColor, visible: chartSettings.showGrid },
+      },
+      crosshair: {
+        vertLine: { color: colors.crossLine, labelBackgroundColor: colors.crossLabel },
+        horzLine: { color: colors.crossLine, labelBackgroundColor: colors.crossLabel },
+      },
     });
   }, [uiTheme, chartSettings]);
+
+  // chart style or candle colors changed: the price series made again, its indicators with it
+  const styleKey = styleKeyOf(chartSettings, style);
+  const styleKeyRef = useRef(styleKey);
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || styleKeyRef.current === styleKey) return;
+    styleKeyRef.current = styleKey;
+    if (seriesRef.current) chart.removeSeries(seriesRef.current);
+    const series = makeMainSeries(chart, useStore.getState().chartSettings, style);
+    seriesRef.current = series;
+    engine.current.mainSeries = series;
+    const p = engine.current.precision;
+    series.applyOptions({ priceFormat: { type: 'price', precision: p, minMove: 1 / 10 ** p } });
+    setSeriesBars(series, engine.current.candles, haRef, style);
+    // the indicators' markers were on the old series
+    if (engine.current.candles.length) drawIndicators(); else layout();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [styleKey]);
 
   useEffect(() => {
     const f = timeFormatters(timeZone, timeframe);
@@ -198,18 +247,28 @@ export default function MiniChartPane({ initialTicker, initialTimeframe, onTicke
       const p = pricePrecision(symbol, candles[candles.length - 1].close);
       engine.current.precision = p;
       series.applyOptions({ priceFormat: { type: 'price', precision: p, minMove: 1 / 10 ** p } });
-      series.setData(candles.map(bar));
       engine.current.candles = candles.slice();
+      setSeriesBars(series, engine.current.candles, haRef, styleRef.current);
       drawIndicators();
       chartRef.current?.timeScale().scrollToRealTime();
       setSource(session.label);
       off = session.subscribe((c) => {
+        // the series of the chart style now (made again when the style changes)
+        const s = seriesRef.current;
+        if (!s) return;
         const list = engine.current.candles, last = list[list.length - 1];
         // an older bar: a correction, or an estimated CME bar replaced by the real one
-        const older = !!last && c.time < last.time;
-        try { series.update(bar(c), older); } catch { return; /* a bar the chart doesn't have */ }
-        if (older) { const i = list.findIndex((x) => x.time === c.time); if (i >= 0) list[i] = c; }
-        else if (last && last.time === c.time) list[list.length - 1] = c; else list.push(c);
+        if (last && c.time < last.time) {
+          const i = list.findIndex((x) => x.time === c.time);
+          if (i < 0) return;
+          list[i] = c;
+          const st = styleRef.current;
+          // a past bar moves the Heikin Ashi bars after it; lines and areas are redrawn too
+          if (st === 'candles' || st === 'bars') { try { s.update(ohlcPoint(c), true); } catch { return; } } else setSeriesBars(s, list, haRef, st);
+        } else {
+          if (last && last.time === c.time) list[list.length - 1] = c; else list.push(c);
+          try { updateSeriesLast(s, c, haRef, styleRef.current); } catch { return; }
+        }
         // indicators follow the live bar, a few times a second at most
         if (!refreshTimer.current) refreshTimer.current = setTimeout(() => { refreshTimer.current = null; refreshIndicators(true); }, 500);
       });
@@ -240,7 +299,8 @@ export default function MiniChartPane({ initialTicker, initialTimeframe, onTicke
 
   return (
     <div
-      className={`mini-chart-pane ${dropHint ? 'drop-target' : ''}`}
+      className={`mini-chart-pane ${dropHint ? 'drop-target' : ''} ${active ? 'active' : ''}`}
+      onMouseDownCapture={onActivate}
       onDragOver={(e) => { if (isSymbolDrag(e)) { e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'copy'; setDropHint(true); } }}
       onDragLeave={() => setDropHint(false)}
       onDrop={(e) => {
@@ -249,15 +309,18 @@ export default function MiniChartPane({ initialTicker, initialTimeframe, onTicke
         if (!sym) return;
         e.preventDefault();
         e.stopPropagation();
-        changeTicker(sym.ticker);
+        changeTicker(sym.ticker, sym);
       }}
     >
       <div className="mini-chart-header">
-        <select value={ticker} onChange={(e) => changeTicker(e.target.value)}>
+        <select value={ticker} onChange={(e) => changeTicker(e.target.value, known.get(e.target.value))}>
           {[...known.values()].map((s) => <option key={s.ticker} value={s.ticker}>{s.ticker}</option>)}
         </select>
         <select value={timeframe} onChange={(e) => changeTimeframe(e.target.value as Timeframe)}>
           {TIME_TIMEFRAMES.map((tf) => <option key={tf} value={tf}>{tf}</option>)}
+        </select>
+        <select value={style} title="Type de bougie de ce graphique" onChange={(e) => changeStyle(e.target.value as CandleStyle)}>
+          {STYLE_ORDER.map((st) => <option key={st} value={st}>{STYLE_LABELS[st]}</option>)}
         </select>
         <span className="mini-chart-source">{source}</span>
         <button

@@ -1,4 +1,4 @@
-import { TickMarkType, type IChartApi, type ISeriesApi, type ISeriesMarkersPluginApi, type SeriesType, type Time } from 'lightweight-charts';
+import { TickMarkType, type IChartApi, type IPriceScaleApi, type ISeriesApi, type ISeriesMarkersPluginApi, type SeriesType, type Time } from 'lightweight-charts';
 import type { Candle, IndicatorConfig, Symbol, Timeframe, UiTheme } from '../types';
 import { isDailyTf, parseTf, tfSeconds } from '../data/timeframes';
 import { zoneOffsetSec } from '../data/timeZone';
@@ -170,4 +170,35 @@ export function logicalToTime(candles: Candle[], logical: number): number | null
   const i = Math.floor(logical);
   const a = candles[i], b = candles[i + 1];
   return roundMs(a.time + (logical - i) * (b.time - a.time));
+}
+
+// The mouse wheel over a price axis stretches or squeezes that pane's prices (the price pane or an
+// indicator's), like ProRealTime and TradingView, and leaves the time axis alone: caught on the way
+// down, before the chart's own wheel handler (on the elements inside) zooms the time scale.
+// `mainScale`: the price series' scale for the first pane. Returns the cleanup.
+export function wheelOnPriceAxis(chart: IChartApi, el: HTMLElement, mainScale: () => IPriceScaleApi | undefined): () => void {
+  const onWheel = (ev: WheelEvent) => {
+    const rect = el.getBoundingClientRect();
+    if (ev.clientX - rect.left < rect.width - chart.priceScale('right').width()) return;
+    const panes = chart.panes();
+    const i = panes.findIndex((p) => {
+      const r = p.getHTMLElement()?.getBoundingClientRect();
+      return !!r && ev.clientY >= r.top && ev.clientY < r.bottom;
+    });
+    // below the panes: the time axis keeps its own wheel
+    if (i < 0) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const scale = (i === 0 ? mainScale() : undefined) ?? panes[i].priceScale('right');
+    const range = scale.getVisibleRange();
+    if (!range) return;
+    // a wheel notch (~100 px, or 3 lines) is 10 %, a trackpad's small steps a little of it
+    const dy = ev.deltaMode === 1 ? ev.deltaY * 33 : ev.deltaY;
+    const k = 1.1 ** Math.max(-3, Math.min(3, dy / 100));
+    const mid = (range.from + range.to) / 2;
+    scale.applyOptions({ autoScale: false });
+    scale.setVisibleRange({ from: mid - (mid - range.from) * k, to: mid + (range.to - mid) * k });
+  };
+  el.addEventListener('wheel', onWheel, { passive: false, capture: true });
+  return () => el.removeEventListener('wheel', onWheel, { capture: true });
 }

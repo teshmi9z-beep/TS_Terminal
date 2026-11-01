@@ -1,20 +1,21 @@
-import { useStore, POPOUT_ID, type Popout } from '../store/store';
+import { useStore, POPOUT_ID, POPOUT_TOOL, type Popout, type ToolId } from '../store/store';
 import { useChartUi } from '../store/chartUi';
 import type { Symbol, Timeframe, UiTheme } from '../types';
 
-// Detached chart windows: real browser windows (window.open) that can be moved
-// to any screen. They talk to the main window over a BroadcastChannel to report
-// their position, their symbol, and that they closed.
+// Detached windows: real browser windows (window.open) that can be moved to any screen, showing
+// a chart, or a tool page (the screener...) dragged out of the tabs. They talk to the main window
+// over a BroadcastChannel to report their position, their symbol, and that they closed.
 
 const CHANNEL = 'tesh-popouts';
 
 type Geometry = { left: number; top: number; width: number; height: number };
 
 type Msg =
-  | ({ type: 'geom'; id: string; ticker: string; tf: Timeframe; symbol: Symbol } & Geometry)
+  | ({ type: 'geom'; id: string; ticker: string; tf: Timeframe; symbol: Symbol; tool?: ToolId } & Geometry)
   | { type: 'closed'; id: string }
   | { type: 'ping' }
-  | { type: 'close-all' };
+  | { type: 'close-all' }
+  | { type: 'reload' };
 
 export type ScreenInfo = { label: string; left: number; top: number; width: number; height: number; primary: boolean };
 
@@ -62,11 +63,12 @@ export async function listScreens(): Promise<ScreenInfo[]> {
 }
 
 // false when the browser blocked the window (only one pop-up per click unless pop-ups are allowed)
-export function openPopout(symbol: Symbol, tf: Timeframe, place?: Partial<Geometry>, reuseId?: string, silent = false, layoutId?: string | null): boolean {
+// `tool`: a tool page rather than a chart
+export function openPopout(symbol: Symbol, tf: Timeframe, place?: Partial<Geometry>, reuseId?: string, silent = false, layoutId?: string | null, tool?: ToolId): boolean {
   const id = reuseId ?? `p${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
   const width = Math.round(place?.width ?? 960);
   const height = Math.round(place?.height ?? 620);
-  let url = `${location.origin}${location.pathname}?popout=${id}&sym=${encodeURIComponent(JSON.stringify(symbol))}&tf=${tf}`;
+  let url = `${location.origin}${location.pathname}?popout=${id}&sym=${encodeURIComponent(JSON.stringify(symbol))}&tf=${tf}${tool ? `&tool=${tool}` : ''}`;
   // the window puts itself back at this outer size and place (the features below set
   // the inner size, and Chrome may move it)
   if (place?.left != null && place?.top != null && place.width && place.height) url += `&geom=${[place.left, place.top, place.width, place.height].map(Math.round).join(',')}`;
@@ -81,7 +83,7 @@ export function openPopout(symbol: Symbol, tf: Timeframe, place?: Partial<Geomet
   let alreadyOpen = false;
   try { alreadyOpen = win.location.href !== 'about:blank'; } catch { /* cross-origin: treat as new */ }
   if (alreadyOpen) win.focus(); else win.location.href = url;
-  useStore.getState().upsertPopout({ id, symbol, tf, open: true, width, height, left: place?.left, top: place?.top, ...(layoutId !== undefined ? { layoutId } : {}) });
+  useStore.getState().upsertPopout({ id, symbol, tf, open: true, width, height, left: place?.left, top: place?.top, ...(layoutId !== undefined ? { layoutId } : {}), ...(tool ? { tool } : {}) });
   return true;
 }
 
@@ -95,7 +97,7 @@ export function openPopoutOnScreen(symbol: Symbol, tf: Timeframe, screen: Screen
 }
 
 export function reopenPopout(p: Popout, silent = false): boolean {
-  return openPopout(p.symbol, p.tf, { left: p.left, top: p.top, width: p.width, height: p.height }, p.id, silent, p.layoutId);
+  return openPopout(p.symbol, p.tf, { left: p.left, top: p.top, width: p.width, height: p.height }, p.id, silent, p.layoutId, p.tool);
 }
 
 export function closeAllPopouts() {
@@ -115,16 +117,25 @@ export function startPopoutHub(): () => void {
   ch.onmessage = (ev: MessageEvent<Msg>) => {
     const m = ev.data;
     if (m.type === 'geom') {
-      st().upsertPopout({ id: m.id, symbol: m.symbol, tf: m.tf, open: true, left: m.left, top: m.top, width: m.width, height: m.height });
+      st().upsertPopout({ id: m.id, symbol: m.symbol, tf: m.tf, open: true, left: m.left, top: m.top, width: m.width, height: m.height, ...(m.tool ? { tool: m.tool } : {}) });
     } else if (m.type === 'closed') {
       st().upsertPopout({ id: m.id, open: false });
     }
   };
   ch.postMessage({ type: 'ping' } satisfies Msg);
-  return () => ch.close();
+  // F5 (or Ctrl+R) here reloads the detached windows too, each coming back as it was: told as the
+  // page goes, so neither closing this window nor F5 bound to a workspace (no reload) reloads them
+  let reloadKeyAt = 0;
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === 'F5' || ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'r')) reloadKeyAt = Date.now();
+  };
+  const onUnload = () => { if (Date.now() - reloadKeyAt < 2000) ch.postMessage({ type: 'reload' } satisfies Msg); };
+  window.addEventListener('keydown', onKey, true);
+  window.addEventListener('beforeunload', onUnload);
+  return () => { window.removeEventListener('keydown', onKey, true); window.removeEventListener('beforeunload', onUnload); ch.close(); };
 }
 
-// detached window: reports its geometry / symbol and obeys "close all"
+// detached window: reports its geometry / symbol and obeys "close all" and the main window's F5
 export function startPopoutReporter(): () => void {
   if (!POPOUT_ID) return () => {};
   const id = POPOUT_ID;
@@ -134,7 +145,7 @@ export function startPopoutReporter(): () => void {
   const send = (force = false) => {
     const s = useStore.getState();
     const msg: Msg = {
-      type: 'geom', id, ticker: s.symbol.ticker, tf: s.timeframe, symbol: s.symbol,
+      type: 'geom', id, ticker: s.symbol.ticker, tf: s.timeframe, symbol: s.symbol, ...(POPOUT_TOOL ? { tool: POPOUT_TOOL } : {}),
       left: window.screenX, top: window.screenY, width: window.outerWidth, height: window.outerHeight,
     };
     const key = JSON.stringify(msg);
@@ -144,6 +155,7 @@ export function startPopoutReporter(): () => void {
   ch.onmessage = (ev: MessageEvent<Msg>) => {
     if (ev.data.type === 'ping') send(true);
     else if (ev.data.type === 'close-all') window.close();
+    else if (ev.data.type === 'reload') location.reload();
   };
   const onUnload = () => ch.postMessage({ type: 'closed', id } satisfies Msg);
   window.addEventListener('beforeunload', onUnload);

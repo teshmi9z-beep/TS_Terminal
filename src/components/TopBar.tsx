@@ -14,7 +14,10 @@ import { downloadScreenshot } from './mainChart';
 import { GearIcon } from './GearIcon';
 import { endReplaySession } from './tradingAccount';
 import LinkMenu from './LinkMenu';
+import SymbolQuickMenu from './SymbolQuickMenu';
 import { LANG, setLang } from '../i18n/lang';
+import { brokerLabel, disconnectBroker, isLive, useBroker } from '../store/broker';
+import { BrokerLogo } from './BrokerDialog';
 
 const STYLES: { id: ChartSettings['candleStyle']; label: string; icon: ReactElement }[] = [
   { id: 'candles', label: 'Bougies', icon: <CandlesIcon /> },
@@ -59,8 +62,9 @@ export default function TopBar() {
   const currentWs = workspaces.find((w) => w.id === currentWorkspaceId);
   const BUTTONS: Record<TopBarButtonId, ReactElement> = {
     workspaces: (
-      <button className="tb-btn" title="Espaces de travail (enregistrer / charger / exporter)" onClick={(e) => setWsMenuAt(wsMenuAt ? null : below(e.currentTarget))}>
-        <WorkspaceIcon /><span className="tb-ws-name">{currentWs?.name ?? 'Espaces'}</span>
+      // always "Espaces" (the windows' places on the screens are saved from here), the loaded one's name beside it
+      <button className="tb-btn" title="Espaces de travail : enregistrer / charger la place des fenêtres sur les écrans, exporter" onClick={(e) => setWsMenuAt(wsMenuAt ? null : below(e.currentTarget))}>
+        <WorkspaceIcon /><span>Espaces</span>{currentWs && <small className="tb-ws-name" translate="no">{currentWs.name}</small>}
       </button>
     ),
     // the compared symbols are listed (and set) in the chart's legend, top left
@@ -126,6 +130,7 @@ export default function TopBar() {
         <span>{symbol.ticker}</span>
         <SearchIcon />
       </button>
+      <SymbolQuickMenu />
       <LinkMenu />
       <div className="tb-sep" />
       <div className="tf-group">
@@ -190,18 +195,56 @@ export default function TopBar() {
         ))}
       </div>
       <div className="top-bar-spacer" />
-      {!POPOUT_ID && (
-        // like TradingView: the order ticket opens from the top right, above the watchlist
-        <button
-          className={`tb-trade ${rightPanel === 'trading' ? 'active' : ''}`} title="Passer un ordre (compte virtuel)"
-          onClick={() => useStore.getState().toggleTradingPanel()}
-        >
-          <TradeIcon /><span>Trader</span>
-        </button>
-      )}
+      {!POPOUT_ID && <TradeButton />}
       {showLayout && <LayoutMenu onClose={() => setShowLayout(false)} />}
       {wsMenuAt && <WorkspaceMenu at={wsMenuAt} onClose={() => setWsMenuAt(null)} />}
       {showProfiles && <ProfileMenu onClose={() => setShowProfiles(false)} />}
+    </div>
+  );
+}
+
+// like TradingView: the order ticket opens from the top right, above the watchlist, and the chevron
+// picks the broker it trades through (the platform's virtual account by default)
+function TradeButton() {
+  const rightPanel = useStore((s) => s.rightPanel);
+  const active = useBroker((s) => s.active);
+  const account = useBroker((s) => s.account);
+  const openDialog = useChartUi((s) => s.openDialog);
+  const [menu, setMenu] = useState<{ left: number; top: number } | null>(null);
+  // a broker picked but its session lost (server restarted, the real account never kept): log in again
+  const broker = active !== 'paper';
+  const off = broker && !account;
+  const close = () => setMenu(null);
+  return (
+    <div className="tb-trade-group">
+      <button
+        className={`tb-trade ${rightPanel === 'trading' ? 'active' : ''} ${isLive(active) ? 'live' : ''}`}
+        title={broker ? (off ? `${brokerLabel(active)} n’est plus connecté : se reconnecter` : `Passer un ordre (${brokerLabel(active)})`) : 'Passer un ordre (compte virtuel)'}
+        onClick={() => (off ? openDialog('brokers') : useStore.getState().toggleTradingPanel())}
+      >
+        {broker ? <BrokerLogo id={active} size={18} /> : <TradeIcon />}
+        <span>Trader</span>
+        {broker && <small className="tb-trade-acct">{off ? 'déconnecté' : isLive(active) ? 'réel' : 'démo'}</small>}
+      </button>
+      <button
+        className={`tb-trade tb-trade-more ${menu ? 'open' : ''} ${isLive(active) ? 'live' : ''}`} title="Courtier et paramètres de trading"
+        onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setMenu(menu ? null : { left: Math.max(4, r.right - 240), top: r.bottom + 4 }); }}
+      >
+        <ChevronIcon />
+      </button>
+      {menu && (
+        <>
+          <div className="tb-dropdown-backdrop" onClick={close} />
+          <div className="tb-dropdown-menu bk-menu" style={{ left: menu.left, top: menu.top }}>
+            <button className="tb-menu-item" onClick={() => { close(); openDialog('tradingSettings'); }}><GearIcon /><span>Paramètres de trading…</span></button>
+            {broker && <button className="tb-menu-item" onClick={() => { close(); openDialog('guards'); }}><ShieldIcon /><span>Garde-fous…</span></button>}
+            <button className="tb-menu-item" onClick={() => { close(); openDialog('brokers'); }}><FolderIcon /><span>Connecter un autre courtier…</span></button>
+            {broker && account && (
+              <button className="tb-menu-item bk-logout" onClick={() => { close(); void disconnectBroker(); }}><LogoutIcon /><span>Déconnexion</span></button>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -233,5 +276,8 @@ function GlobeIcon() { return <svg {...ic}><circle cx="9" cy="9" r="6.5" /><path
 function WorkspaceIcon() { return <svg {...ic}><rect x="2" y="3" width="6" height="5" rx="1" /><rect x="10" y="3" width="6" height="5" rx="1" /><rect x="2" y="10" width="14" height="5" rx="1" /></svg>; }
 function DetachIcon() { return <svg {...ic}><path d="M10 3h5v5M15 3l-7 7" /><path d="M13 11v4H3V5h4" /></svg>; }
 function ChevronIcon() { return <svg {...ic} width={14} height={14}><path d="M4 7l5 5 5-5" /></svg>; }
+function ShieldIcon() { return <svg {...ic}><path d="M9 2.5l5.5 2v4.2c0 3.3-2.3 5.8-5.5 6.8-3.2-1-5.5-3.5-5.5-6.8V4.5z" /><path d="M6.6 9l1.7 1.7 3.2-3.4" /></svg>; }
+function FolderIcon() { return <svg {...ic}><path d="M2.5 5V14h13V6.5H9L7.5 5z" /></svg>; }
+function LogoutIcon() { return <svg {...ic}><path d="M7 3H3.5v12H7M11 5.5L14.5 9 11 12.5M14.5 9H7" /></svg>; }
 function ReplayIcon() { return <svg {...ic}><path d="M9.5 4.5L4 9l5.5 4.5zM15.5 4.5L10 9l5.5 4.5z" /></svg>; }
 function SearchIcon() { return <svg {...ic} width={14} height={14}><circle cx="8" cy="8" r="5" /><path d="M12 12l3.5 3.5" /></svg>; }

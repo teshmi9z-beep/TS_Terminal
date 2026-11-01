@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useChartUi } from '../store/chartUi';
 import { reopenPopout } from './popouts';
+import { TOOL_LABELS } from './tabs/tabActions';
 
 // Chrome opens one pop-up per click unless pop-ups are allowed for the site: the
 // windows of a workspace it blocked wait here. One click opens all of them when
@@ -29,7 +30,7 @@ export default function PendingPopoutsBar() {
         </small>
       </span>
       <button className="pill-btn" onClick={openAll}>
-        Ouvrir {n > 1 ? `les ${n} fenêtres` : pending[0].symbol.ticker}
+        Ouvrir {n > 1 ? `les ${n} fenêtres` : pending[0].tool ? TOOL_LABELS[pending[0].tool] : pending[0].symbol.ticker}
       </button>
       <button className="remove-btn" title="Ignorer" onClick={() => { setPending([]); setBlockedAgain(false); }}>✕</button>
     </div>

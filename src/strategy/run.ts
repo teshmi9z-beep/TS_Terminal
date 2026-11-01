@@ -25,11 +25,17 @@ export function currencyOf(sym: Symbol): string {
 export type LoadedHistory = { candles: Candle[]; label: string; simulated: boolean };
 
 // the strategy tester loads its own history (deeper than the chart's)
+// the tests start on 2020-01-01 by default (older markets don't say much about today's)
+export const SINCE_2020 = Date.UTC(2020, 0, 1) / 1000;
+
+// `bars`: the last bars to load, 0 for all those since 2020 (as far as the source pages back)
 export async function loadHistory(sym: Symbol, tf: Timeframe, bars: number, onProgress?: (n: number) => void): Promise<LoadedHistory> {
   const { session, candles } = await openFeed(sym, tf);
   let k = candles;
   onProgress?.(k.length);
-  for (let guard = 0; guard < 80 && k.length < bars && session.hasMore; guard++) {
+  const since = bars <= 0;
+  const enough = () => (since ? (k[0]?.time ?? 0) <= SINCE_2020 : k.length >= bars);
+  for (let guard = 0; guard < 80 && !enough() && session.hasMore; guard++) {
     const older = await session.loadOlder();
     const first = k[0]?.time ?? Infinity;
     const add = older.filter((c) => c.time < first);
@@ -37,7 +43,7 @@ export async function loadHistory(sym: Symbol, tf: Timeframe, bars: number, onPr
     k = [...add, ...k];
     onProgress?.(k.length);
   }
-  return { candles: k.slice(-bars), label: session.label, simulated: session.source === 'sim' };
+  return { candles: since ? k.filter((c) => c.time >= SINCE_2020) : k.slice(-bars), label: session.label, simulated: session.source === 'sim' };
 }
 
 export type RunContext = { symbol: Symbol; timeframe: Timeframe; source: string };

@@ -90,7 +90,7 @@ export function defaultRules(): RulesStrategy {
     stop: { kind: 'swing', bars: 3 },
     target: { kind: 'rr', ratio: 1 },
     sizing: { mode: 'risk', value: 1 },
-    initialCapital: 100000,
+    initialCapital: 10000,
     commissionPct: 0,
     fillOnClose: false,
   };

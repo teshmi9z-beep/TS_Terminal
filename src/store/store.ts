@@ -3,8 +3,8 @@ import { persist, createJSONStorage } from 'zustand/middleware';
 import type { PineScript } from '../pine/compile';
 import type { YieldPeriod } from '../data/yields';
 import { defaultStrategies, type StrategyDoc } from '../strategy/doc';
-import type { AlertLogEntry, ChartSettings, Drawing, DrawingPreset, DrawTool, FibSettings, IndicatorConfig, PriceAlert, PriceScaleModeName, Profile, Symbol, TechAlert, Timeframe, UiTheme, WatchlistItem, WatchlistRow, WatchlistTab } from '../types';
-import { dependentsOf } from '../indicators/derived';
+import type { AlertLogEntry, ChartSettings, Drawing, DrawingPreset, DrawTool, FibSettings, IndicatorConfig, IndicatorTemplate, PriceAlert, PriceScaleModeName, Profile, Symbol, TechAlert, Timeframe, UiTheme, WatchlistItem, WatchlistRow, WatchlistTab } from '../types';
+import { dependentsOf, sourceKey, sourceRef } from '../indicators/derived';
 
 export const DEFAULT_TOOL_ORDER: DrawTool[] = [
   'cursor', 'trendline', 'extended_line', 'ray', 'horizontal_line', 'hline_right', 'hline_both', 'hline_left', 'rectangle', 'brush', 'text',
@@ -15,10 +15,40 @@ import { DEFAULT_CHART_SETTINGS_DARK, DEFAULT_CHART_SETTINGS_LIGHT } from '../ty
 const defaultChartSettings = (t: UiTheme) => (t === 'dark' ? DEFAULT_CHART_SETTINGS_DARK : DEFAULT_CHART_SETTINGS_LIGHT);
 
 type ThemedState = { uiTheme: UiTheme; chartSettings: ChartSettings; themeChartSettings: Partial<Record<UiTheme, ChartSettings>> };
-// light / dark switch: each theme keeps its own chart colors
+
+// a chart's colors belong to the light or the dark theme, told by its background
+function lightBackground(c: string): boolean {
+  const h = /^#([0-9a-f]{3,8})$/i.exec(c.trim())?.[1];
+  const rgb = h
+    ? (h.length < 6 ? [...h.slice(0, 3)].map((x) => parseInt(x + x, 16)) : [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16)))
+    : (/rgba?\(([^)]+)\)/i.exec(c)?.[1].split(',').slice(0, 3).map((x) => parseFloat(x)) ?? [0, 0, 0]);
+  return (0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]) / 255 > 0.5;
+}
+export const fitsTheme = (cs: ChartSettings | undefined, t: UiTheme): cs is ChartSettings => !!cs?.background && lightBackground(cs.background) === (t === 'light');
+
+// the main window's chart colors for a theme, as it saved them (a detached window takes them)
+function mainChartSettings(t: UiTheme): ChartSettings | undefined {
+  try {
+    const st = JSON.parse(localStorage.getItem(MAIN_KEY) ?? 'null')?.state as Partial<ThemedState> | undefined;
+    const cs = st?.uiTheme === t ? st.chartSettings : st?.themeChartSettings?.[t];
+    return fitsTheme(cs, t) ? cs : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// the chart colors to show with a theme: the ones last used with it when they suit it (a tab
+// kept from the other theme, or a detached window opened from one, may carry the other theme's),
+// else the main window's, else the defaults
+export function chartSettingsFor(t: UiTheme, saved?: ChartSettings): ChartSettings {
+  return fitsTheme(saved, t) ? saved : mainChartSettings(t) ?? defaultChartSettings(t);
+}
+
+// light / dark switch: each theme keeps its own chart colors (never the other theme's)
 function switchTheme(st: ThemedState, t: UiTheme): ThemedState {
-  const saved = { ...st.themeChartSettings, [st.uiTheme]: st.chartSettings };
-  return { uiTheme: t, themeChartSettings: saved, chartSettings: saved[t] ?? defaultChartSettings(t) };
+  const saved = { ...st.themeChartSettings, ...(fitsTheme(st.chartSettings, st.uiTheme) ? { [st.uiTheme]: st.chartSettings } : {}) };
+  const chartSettings = chartSettingsFor(t, saved[t]);
+  return { uiTheme: t, themeChartSettings: { ...saved, [t]: chartSettings }, chartSettings };
 }
 import { SYMBOLS } from '../data/symbols';
 import { getDailyChange } from '../data/generateData';
@@ -38,6 +68,24 @@ function loadProfilesFromStorage(): Profile[] {
 }
 function saveProfilesToStorage(profiles: Profile[]) {
   try { localStorage.setItem(PROFILES_KEY, JSON.stringify(profiles)); } catch { /* ignore quota/denied */ }
+}
+
+// kept apart like the templates above, so every window (detached charts too) finds them
+const INDICATOR_TEMPLATES_KEY = 'platform_indicator_templates_v1';
+function loadIndicatorTemplates(): IndicatorTemplate[] {
+  try { return JSON.parse(localStorage.getItem(INDICATOR_TEMPLATES_KEY) ?? '[]'); } catch { return []; }
+}
+function saveIndicatorTemplates(list: IndicatorTemplate[]) {
+  try { localStorage.setItem(INDICATOR_TEMPLATES_KEY, JSON.stringify(list)); } catch { /* ignore quota/denied */ }
+}
+// a template's indicators with ids of their own, an indicator on another one following it
+function freshIndicators(list: IndicatorConfig[]): IndicatorConfig[] {
+  const ids = new Map(list.map((i) => [i.id, nextId()]));
+  return list.map((i) => {
+    const ref = sourceRef(i);
+    const src = ref && ids.has(ref.id) ? { source: sourceKey(ids.get(ref.id)!, ref.plot) } : {};
+    return { ...structuredClone(i), id: ids.get(i.id)!, ...src };
+  });
 }
 
 function tickerSeed(ticker: string): number {
@@ -71,9 +119,13 @@ export type MagnetMode = 'off' | 'weak' | 'strong';
 export type PanePatch = { id: string; paneStretch?: number; collapsed?: boolean };
 
 // tf: the window's own timeframe (kept when the layout changes and comes back)
-export type FreeWindow = { id: string; x: number; y: number; w: number; h: number; ticker: string; z: number; tf?: Timeframe };
-// a chart of the 2 / 4 window layouts, kept the same way
-export type GridChart = { ticker?: string; tf?: Timeframe };
+// style: its own chart style (candles, Heikin Ashi...), else the one of "Style du graphique"
+// symbol: the instrument itself, for one that is in no list (a stock picked in the screener)
+export type FreeWindow = { id: string; x: number; y: number; w: number; h: number; ticker: string; z: number; tf?: Timeframe; style?: ChartSettings['candleStyle']; symbol?: Symbol };
+// the charts of a chart tab: 1, 2, 3 (two above one as wide as both), 4 or 6 windows, or free windows
+export type ChartLayout = 1 | 2 | 3 | 4 | 6 | 'free';
+// a chart of the 2 / 3 / 4 / 6 window layouts, kept the same way
+export type GridChart = { ticker?: string; tf?: Timeframe; style?: ChartSettings['candleStyle']; symbol?: Symbol };
 
 // a chart opened in its own browser window (movable to any screen)
 export type Popout = {
@@ -87,6 +139,8 @@ export type Popout = {
   height?: number;
   // saved layout (workspace) the window belongs to
   layoutId?: string | null;
+  // a tool page (the screener...) rather than a chart
+  tool?: ToolId;
 };
 
 // ---------- charts linked across windows (ProRealTime's "Lier") ----------
@@ -105,9 +159,14 @@ export type ChartLink = {
 
 // ---------- paper trading (virtual account) ----------
 export type PaperSide = 'long' | 'short';
+// a broker's position / order drawn on the chart (components/brokerAccount.ts): its levels are in the
+// chart's prices, its labels show the broker's (chart + offset), and a point is worth `perPoint` in
+// `currency` per contract; `pnl`: the broker's own figure for an open position (its spread included)
+export type BrokerLeg = { offset: number; perPoint: number; currency: string; pnl?: number | null };
 export type PaperPosition = {
   id: string; symbol: Symbol; side: PaperSide; qty: number; entry: number;
   sl?: number; tp?: number; openedAt: number;
+  broker?: BrokerLeg;
   // opened by a robot in automatic mode: which entry of which signal
   robot?: RobotLegTag;
 };
@@ -129,6 +188,7 @@ export type AutoRobot = {
 export type PaperOrder = {
   id: string; symbol: Symbol; side: PaperSide; qty: number; type: 'limit' | 'stop'; price: number;
   sl?: number; tp?: number; createdAt: number;
+  broker?: BrokerLeg;
   // placed by a robot in automatic mode: the position it fills carries the tag
   robot?: RobotLegTag;
 };
@@ -142,9 +202,9 @@ export type PaperAccount = {
   initial: number; balance: number;
   positions: PaperPosition[]; orders: PaperOrder[]; history: PaperTrade[];
 };
-const NEW_ACCOUNT = (initial = 100000): PaperAccount => ({ initial, balance: initial, positions: [], orders: [], history: [] });
+const NEW_ACCOUNT = (initial = 10000): PaperAccount => ({ initial, balance: initial, positions: [], orders: [], history: [] });
 
-export type RightPanelId = 'watchlist' | 'alerts' | 'data' | 'screener' | 'pine' | 'trading' | 'yields' | 'macro';
+export type RightPanelId = 'watchlist' | 'alerts' | 'data' | 'screener' | 'pine' | 'trading' | 'yields' | 'macro' | 'broker';
 
 // panel under the chart (TradingView's bottom panel): null tab = folded to its tab bar
 export type BottomTab = 'editor' | 'tester' | 'trading' | 'replay' | 'options';
@@ -173,7 +233,7 @@ export function comparesOf(state: { compares?: CompareItem[]; compareSymbol?: Sy
 export type ToolId = 'screener' | 'heatmap' | 'calendar' | 'news' | 'portfolios' | 'yields' | 'options' | 'fundamentals' | 'markets' | 'community' | 'macro' | 'robots' | 'data';
 export const ALL_TOOLS: ToolId[] = ['screener', 'heatmap', 'calendar', 'news', 'portfolios', 'yields', 'options', 'fundamentals', 'markets', 'community', 'macro', 'robots', 'data'];
 // chart settings each chart tab keeps for itself (the rest is shared by all tabs)
-export const TAB_KEYS = ['symbol', 'timeframe', 'indicators', 'layout', 'freeWindows', 'gridCharts', 'chartSettings', 'priceScaleMode', 'compares', 'testerRobot'] as const;
+export const TAB_KEYS = ['symbol', 'timeframe', 'indicators', 'indicatorTemplate', 'layout', 'freeWindows', 'gridCharts', 'chartSettings', 'priceScaleMode', 'compares', 'testerRobot'] as const;
 export type TabChartState = Partial<Pick<Store, (typeof TAB_KEYS)[number]>>;
 export type AppTab = {
   id: string;
@@ -233,7 +293,7 @@ const DEFAULT_YIELD_CURVES: YieldCurveCfg[] = [
 
 // what a workspace remembers of a chart window (drawings stay global, per symbol)
 export const WORKSPACE_KEYS = [
-  'symbol', 'timeframe', 'indicators', 'layout', 'freeWindows', 'gridCharts', 'chartSettings', 'themeChartSettings', 'uiTheme',
+  'symbol', 'timeframe', 'indicators', 'indicatorTemplate', 'layout', 'freeWindows', 'gridCharts', 'chartSettings', 'themeChartSettings', 'uiTheme',
   'watchlistWidth', 'priceScaleMode', 'compares', 'timeZone', 'favoritesBar',
 ] as const;
 export type WorkspaceChartState = Partial<Pick<Store, (typeof WORKSPACE_KEYS)[number]>>;
@@ -246,18 +306,22 @@ export type Workspace = {
   shortcut?: string;
   savedAt: number;
   main: WorkspaceChartState;
-  popouts: { symbol: Symbol; tf: Timeframe; left?: number; top?: number; width?: number; height?: number; state: WorkspaceChartState }[];
+  popouts: { symbol: Symbol; tf: Timeframe; left?: number; top?: number; width?: number; height?: number; state: WorkspaceChartState; tool?: ToolId }[];
 };
 
 // set when this page is a detached chart window (?popout=<id>)
 const urlParams = new URLSearchParams(window.location.search);
 export const POPOUT_ID = urlParams.get('popout');
-const MAIN_KEY = 'platform_state_v1';
+// set when that window shows a tool page (?tool=screener...) dragged out of the tabs
+export const POPOUT_TOOL: ToolId | null = POPOUT_ID && ALL_TOOLS.includes(urlParams.get('tool') as ToolId) ? urlParams.get('tool') as ToolId : null;
+export const MAIN_KEY = 'platform_state_v1';
 
 // A detached window keeps its own saved state (symbol, indicators, drawings...),
-// seeded from the main window's state the first time it opens.
+// seeded from the main window's state the first time it opens. A tool window reads the main
+// window's state and never writes it: it follows it, and sends its changes there (toolWindows.ts).
 const stateStorage = createJSONStorage(() => ({
   getItem: (name: string) => {
+    if (POPOUT_TOOL) return localStorage.getItem(MAIN_KEY);
     const own = localStorage.getItem(name);
     if (own || !POPOUT_ID) return own;
     const main = localStorage.getItem(MAIN_KEY);
@@ -277,8 +341,8 @@ const stateStorage = createJSONStorage(() => ({
       return main;
     }
   },
-  setItem: (name: string, value: string) => localStorage.setItem(name, value),
-  removeItem: (name: string) => localStorage.removeItem(name),
+  setItem: (name: string, value: string) => { if (!POPOUT_TOOL) localStorage.setItem(name, value); },
+  removeItem: (name: string) => { if (!POPOUT_TOOL) localStorage.removeItem(name); },
 }));
 
 // the main window's light / dark theme, which every detached window follows
@@ -343,6 +407,9 @@ type Store = {
   removeSection: (id: string) => void;
   watchlistWidth: number;
   setWatchlistWidth: (w: number) => void;
+  // the Pine editor detached from the right panel: its window's place and size (null: in the panel)
+  pineFloat: { x: number; y: number; w: number; h: number } | null;
+  setPineFloat: (r: { x: number; y: number; w: number; h: number } | null) => void;
 
   watchlistSettings: WatchlistSettings;
   updateWatchlistSettings: (patch: Partial<WatchlistSettings>) => void;
@@ -381,6 +448,8 @@ type Store = {
   updateIndicator: (id: string, patch: Partial<IndicatorConfig>) => void;
   // swaps a pane indicator with its previous/next pane indicator (pane order)
   moveIndicator: (id: string, dir: -1 | 1) => void;
+  // a pane dragged onto another one takes its place (the panes between shift by one)
+  movePaneTo: (id: string, toId: string) => void;
   setPaneLayout: (patches: PanePatch[]) => void;
 
   priceScaleMode: PriceScaleModeName;
@@ -420,14 +489,14 @@ type Store = {
   timeZone: string;
   setTimeZone: (zone: string) => void;
 
-  layout: 1 | 2 | 4 | 'free';
-  setLayout: (n: 1 | 2 | 4 | 'free') => void;
+  layout: ChartLayout;
+  setLayout: (n: ChartLayout) => void;
 
   freeWindows: FreeWindow[];
   // the charts of the 2 / 4 window layouts, by position
   gridCharts: GridChart[];
   setGridChart: (i: number, patch: GridChart) => void;
-  addFreeWindow: (ticker: string, at?: { x: number; y: number }) => void;
+  addFreeWindow: (sym: Symbol, at?: { x: number; y: number }) => void;
   updateFreeWindow: (id: string, patch: Partial<FreeWindow>) => void;
   removeFreeWindow: (id: string) => void;
   bringWindowToFront: (id: string) => void;
@@ -479,6 +548,13 @@ type Store = {
   // the account's trades (arrows and crosses) drawn on the chart
   showTradeMarks: boolean;
   setShowTradeMarks: (v: boolean) => void;
+  // where the labels of positions and orders sit on the chart: at the right next to the price axis, or
+  // stacked at the left and linked to their trade's bar, like ProRealTime
+  tradeLabels: 'right' | 'left';
+  setTradeLabels: (v: 'right' | 'left') => void;
+  // the prices of positions, stops, targets and orders on the price axis (the order being drawn keeps its own)
+  tradeAxisPrices: boolean;
+  setTradeAxisPrices: (v: boolean) => void;
 
   yieldCurves: YieldCurveCfg[];
   setYieldCurves: (c: YieldCurveCfg[]) => void;
@@ -497,7 +573,7 @@ type Store = {
   upsertStrategy: (d: StrategyDoc) => void;
   removeStrategy: (id: string) => void;
   setActiveStrategy: (id: string) => void;
-  // bars loaded by the strategy tester
+  // bars loaded by the strategy tester (0: since 2020-01-01, the default)
   backtestBars: number;
   setBacktestBars: (n: number) => void;
   // the tester's strategy drawn on the chart (its indicators and trades), or removed from it
@@ -576,6 +652,16 @@ type Store = {
   saveProfile: (name: string, thumbnail?: string) => void;
   loadProfile: (name: string) => void;
   deleteProfile: (name: string) => void;
+  indicatorTemplates: IndicatorTemplate[];
+  // the template the chart's indicators came from or were saved as (null: "Sans nom")
+  indicatorTemplate: string | null;
+  setIndicatorTemplate: (name: string | null) => void;
+  saveIndicatorTemplate: (name: string) => void;
+  applyIndicatorTemplate: (name: string) => void;
+  renameIndicatorTemplate: (from: string, to: string) => void;
+  deleteIndicatorTemplate: (name: string) => void;
+  // templates of a backup put back: those missing by name are added, none is replaced; how many
+  mergeIndicatorTemplates: (list: IndicatorTemplate[]) => number;
 
   resetLayout: () => void;
 };
@@ -604,6 +690,13 @@ const MAIN_LIST: [string, string[]][] = [
 ];
 // the main list before version 2
 const OLD_MAIN = ['BTCUSD', 'ETHUSD', 'SOLUSD', 'EURUSD', 'GBPUSD', 'USDJPY'];
+// the "Actions" tab (version 7, 2026-10-30): the user's list from TradingView, in its order
+// (Euronext shares with their .PA ticker, the USDT crypto pairs as the platform's USD ones)
+const STOCKS_TAB = [
+  'AAPL', 'ACA.PA', 'AMD', 'AMZN', 'ARM', 'ASML', 'BNP.PA', 'ENGI.PA', 'FDJU.PA', 'GOOG', 'INTC', 'META', 'MSFT', 'MSTR',
+  'NVDA', 'POLUSD', 'HYPEUSD', 'PYPL', 'TSLA', 'TTE.PA', 'SPCX', 'XRPL', 'XRPUSD', 'SLNC', 'BITC', 'CETH', 'NOK',
+];
+const stocksTab = () => makeTab('wl_actions', 'Actions', STOCKS_TAB.flatMap((t) => SYMBOLS.filter((s) => s.ticker === t)));
 
 // adds a section of the main list once, after the section `afterId` (at the end without it)
 function addMainSection(tabs: WatchlistTab[], name: string, tickers: string[], afterId: string): WatchlistTab[] {
@@ -655,12 +748,13 @@ function mainTab(): WatchlistTab {
 
 const initialWatchlists: WatchlistTab[] = [
   mainTab(),
+  stocksTab(),
   makeTab('wl_crypto', 'Crypto', SYMBOLS.filter((s) => s.category === 'Crypto').slice(0, 10)),
   makeTab('wl_forex', 'Forex', SYMBOLS.filter((s) => s.category === 'Forex').slice(0, 6)),
 ];
 tabIdCounter = 1;
 
-export const useStore = create<Store>()(persist((set) => ({
+export const useStore = create<Store>()(persist((set, get) => ({
   symbol: SYMBOLS[0],
   setSymbol: (s) => set({ symbol: s }),
 
@@ -675,7 +769,7 @@ export const useStore = create<Store>()(persist((set) => ({
   removeCompare: (id) => set((st) => ({ compares: st.compares.filter((c) => c.id !== id) })),
 
   watchlists: initialWatchlists,
-  mainListVersion: 6,
+  mainListVersion: 7,
   activeWatchlistId: 'wl0',
   setActiveWatchlistId: (id) => set({ activeWatchlistId: id }),
   addWatchlistTab: (name, symbols) => {
@@ -753,6 +847,8 @@ export const useStore = create<Store>()(persist((set) => ({
   })),
   watchlistWidth: 300,
   setWatchlistWidth: (w) => set({ watchlistWidth: Math.max(220, Math.min(900, w)) }),
+  pineFloat: null,
+  setPineFloat: (r) => set({ pineFloat: r }),
 
   watchlistSettings: DEFAULT_WATCHLIST_SETTINGS,
   updateWatchlistSettings: (patch) => set((st) => ({ watchlistSettings: { ...st.watchlistSettings, ...patch } })),
@@ -810,6 +906,15 @@ export const useStore = create<Store>()(persist((set) => ({
     const from = paneIdx[pos];
     [list[from], list[target]] = [list[target], list[from]];
     return { indicators: list };
+  }),
+  movePaneTo: (id, toId) => set((st) => {
+    const panes = st.indicators.filter((i) => !i.overlay);
+    const from = panes.findIndex((i) => i.id === id), to = panes.findIndex((i) => i.id === toId);
+    if (from < 0 || to < 0 || from === to) return st;
+    const [moved] = panes.splice(from, 1);
+    panes.splice(to, 0, moved);
+    let k = 0;
+    return { indicators: st.indicators.map((i) => (i.overlay ? i : panes[k++])) };
   }),
   setPaneLayout: (patches) => set((st) => ({
     indicators: st.indicators.map((i) => {
@@ -869,7 +974,7 @@ export const useStore = create<Store>()(persist((set) => ({
   setLayout: (n) => set((st) => ({
     layout: n,
     freeWindows: n === 'free' && st.freeWindows.length === 0
-      ? [{ id: `fw${Date.now().toString(36)}${(winIdCounter++).toString(36)}`, x: 20, y: 20, w: 420, h: 320, ticker: st.symbol.ticker, z: winZCounter++ }]
+      ? [{ id: `fw${Date.now().toString(36)}${(winIdCounter++).toString(36)}`, x: 20, y: 20, w: 420, h: 320, ticker: st.symbol.ticker, symbol: st.symbol, z: winZCounter++ }]
       : st.freeWindows,
   })),
 
@@ -881,12 +986,12 @@ export const useStore = create<Store>()(persist((set) => ({
     next[i] = { ...next[i], ...patch };
     return { gridCharts: next };
   }),
-  addFreeWindow: (ticker, at) => set((st) => ({
+  addFreeWindow: (sym, at) => set((st) => ({
     freeWindows: [...st.freeWindows, {
       id: `fw${Date.now().toString(36)}${(winIdCounter++).toString(36)}`,
       x: at ? Math.max(0, at.x) : 30 + (st.freeWindows.length % 5) * 30,
       y: at ? Math.max(0, at.y) : 30 + (st.freeWindows.length % 5) * 30,
-      w: 420, h: 320, ticker, z: winZCounter++,
+      w: 420, h: 320, ticker: sym.ticker, symbol: sym, z: winZCounter++,
     }],
   })),
   updateFreeWindow: (id, patch) => set((st) => ({ freeWindows: st.freeWindows.map((w) => (w.id === id ? { ...w, ...patch } : w)) })),
@@ -941,7 +1046,8 @@ export const useStore = create<Store>()(persist((set) => ({
   rightPanel: 'watchlist',
   setRightPanel: (p) => set({ rightPanel: p }),
   // the main window's chart is the principal one until a detached window takes it
-  chartLink: { symbol: 0, tf: 0, bars: false, scroll: 0, principal: !POPOUT_ID },
+  // the zoom (number of bars shown) follows the timeframe's link unless unticked
+  chartLink: { symbol: 0, tf: 0, bars: true, scroll: 0, principal: !POPOUT_ID },
   setChartLink: (patch) => set((st) => ({ chartLink: { ...st.chartLink, ...patch } })),
   toggleTradingPanel: () => set((st) => (st.rightPanel === 'trading'
     ? { rightPanel: st.rightPanelBeside, rightPanelBeside: null }
@@ -950,6 +1056,10 @@ export const useStore = create<Store>()(persist((set) => ({
   setRightPanelBeside: (p) => set({ rightPanelBeside: p }),
   showTradeMarks: true,
   setShowTradeMarks: (v) => set({ showTradeMarks: v }),
+  tradeLabels: 'right',
+  setTradeLabels: (v) => set({ tradeLabels: v }),
+  tradeAxisPrices: true,
+  setTradeAxisPrices: (v) => set({ tradeAxisPrices: v }),
 
   yieldCurves: DEFAULT_YIELD_CURVES,
   setYieldCurves: (c) => set({ yieldCurves: c }),
@@ -984,7 +1094,7 @@ export const useStore = create<Store>()(persist((set) => ({
     activeStrategyId: id,
     indicators: st.indicators.map((i) => (i.type === 'STRATEGY' ? { ...i, strategyId: id } : i)),
   })),
-  backtestBars: 5000,
+  backtestBars: 0,
   setBacktestBars: (n) => set({ backtestBars: n }),
   setStrategyOnChart: (id) => set((st) => {
     const others = st.indicators.filter((i) => i.type !== 'STRATEGY');
@@ -1133,6 +1243,41 @@ export const useStore = create<Store>()(persist((set) => ({
     return { profiles };
   }),
 
+  indicatorTemplates: loadIndicatorTemplates(),
+  indicatorTemplate: null,
+  setIndicatorTemplate: (name) => set({ indicatorTemplate: name }),
+  saveIndicatorTemplate: (name) => set((st) => {
+    const t: IndicatorTemplate = { name, indicators: structuredClone(st.indicators), savedAt: Date.now() };
+    const indicatorTemplates = [...st.indicatorTemplates.filter((x) => x.name !== name), t].sort((a, b) => a.name.localeCompare(b.name));
+    saveIndicatorTemplates(indicatorTemplates);
+    return { indicatorTemplates, indicatorTemplate: name };
+  }),
+  applyIndicatorTemplate: (name) => set((st) => {
+    const t = st.indicatorTemplates.find((x) => x.name === name);
+    return t ? { indicators: freshIndicators(t.indicators), indicatorTemplate: name } : st;
+  }),
+  renameIndicatorTemplate: (from, to) => set((st) => {
+    const indicatorTemplates = st.indicatorTemplates.filter((x) => x.name !== to).map((x) => (x.name === from ? { ...x, name: to } : x))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    saveIndicatorTemplates(indicatorTemplates);
+    return { indicatorTemplates, indicatorTemplate: st.indicatorTemplate === from ? to : st.indicatorTemplate };
+  }),
+  deleteIndicatorTemplate: (name) => set((st) => {
+    const indicatorTemplates = st.indicatorTemplates.filter((x) => x.name !== name);
+    saveIndicatorTemplates(indicatorTemplates);
+    return { indicatorTemplates, indicatorTemplate: st.indicatorTemplate === name ? null : st.indicatorTemplate };
+  }),
+  mergeIndicatorTemplates: (list) => {
+    const st = get();
+    const have = new Set(st.indicatorTemplates.map((t) => t.name));
+    const add = list.filter((t) => !have.has(t.name));
+    if (!add.length) return 0;
+    const indicatorTemplates = [...st.indicatorTemplates, ...add].sort((a, b) => a.name.localeCompare(b.name));
+    saveIndicatorTemplates(indicatorTemplates);
+    set({ indicatorTemplates });
+    return add.length;
+  },
+
   resetLayout: () => set((st) => ({
     watchlistWidth: 300,
     layout: 1,
@@ -1143,7 +1288,10 @@ export const useStore = create<Store>()(persist((set) => ({
   name: POPOUT_ID ? `platform_popout_${POPOUT_ID}` : MAIN_KEY,
   storage: stateStorage,
   partialize: (state) => {
-    const { profiles: _profiles, saveProfile: _save, loadProfile: _load, deleteProfile: _delete, ...rest } = state;
+    const {
+      profiles: _profiles, saveProfile: _save, loadProfile: _load, deleteProfile: _delete,
+      indicatorTemplates: _templates, saveIndicatorTemplate: _saveT, applyIndicatorTemplate: _applyT, deleteIndicatorTemplate: _deleteT, ...rest
+    } = state;
     return rest;
   },
   // older saves may lack newer top-bar buttons or carry removed ones
@@ -1180,15 +1328,46 @@ export const useStore = create<Store>()(persist((set) => ({
       if (v < 4) watchlists = addMainSection(watchlists, 'CFD', CFDS, 'wl0_future');
       if (v < 5 && v >= 3) watchlists = addToMainSection(watchlists, 'wl0_future', FUTURES_5, FUTURES);
       if (v < 6) watchlists = addMainSection(watchlists, 'ETP crypto', ETPS, 'wl0_crypto');
+      // the "Actions" tab, after the main list
+      if (v < 7 && !watchlists.some((t) => t.id === 'wl_actions')) {
+        const at = watchlists.findIndex((t) => t.id === 'wl0') + 1;
+        watchlists = [...watchlists.slice(0, at), stocksTab(), ...watchlists.slice(at)];
+      }
     }
     // the retracement's settings the user chose on 2026-09-29 replace one saved before
     const fibDefaults = (p as { fibV?: number }).fibV === 2 ? p.fibDefaults ?? {} : { ...(p.fibDefaults ?? {}), fib_retracement: undefined };
     // saves from before the real time zones kept a fixed offset (2 = Paris in summer, wrong in winter)
     const timeZone = p.timeZone ?? zoneOfOffset((p as { utcOffsetHours?: number }).utcOffsetHours);
-    const merged = { ...current, ...p, timeZone, fibDefaults, fibV: 2, watchlists, activeWatchlistId, mainListVersion: 6, topBarOrder: order, homeTools, knownTools: ALL_TOOLS, toolOrder: [...new Set(tools)], compares: comparesOf(p as { compareSymbol?: Symbol | null }) };
+    // the indicators' panel of the right bar (2026-10-29) moved into the "Indicateurs" window
+    const panels: Partial<Pick<Store, 'rightPanel' | 'rightPanelBeside'>> = {};
+    if ((p.rightPanel as string | null | undefined) === 'indicators') panels.rightPanel = null;
+    if ((p.rightPanelBeside as string | null | undefined) === 'indicators') panels.rightPanelBeside = null;
+    // the templates always come from their own key: a save from 2026-10-29 evening may still carry
+    // an empty list of them in this state, which would hide the real ones
+    // saves from before 2026-10-30: the zoom follows the timeframe's link from now on (it was a box to tick)
+    const linkV = (p as { linkV?: number }).linkV;
+    const chartLink = p.chartLink && linkV !== 2 ? { ...p.chartLink, bars: true } : p.chartLink ?? current.chartLink;
+    // saves from before 2026-10-30 evening: the tester's history since 2020 when the old default
+    // (5 000 bars) was never changed, and an untouched virtual account of 100 000 made a 10 000 one
+    const defaultsV = (p as { defaultsV?: number }).defaultsV ?? 0;
+    const old = defaultsV < 1;
+    const backtestBars = old && p.backtestBars === 5000 ? 0 : p.backtestBars ?? current.backtestBars;
+    const pp = p.paper;
+    const paper = old && pp && pp.initial === 100000 && pp.balance === 100000 && !pp.positions.length && !pp.orders.length && !pp.history.length ? NEW_ACCOUNT() : pp ?? current.paper;
+    // the strategies still on the old default capital (100 000) start with 10 000 too
+    const strategies = defaultsV < 2 && p.strategies
+      ? p.strategies.map((d) => ({
+        ...d,
+        rules: d.rules?.initialCapital === 100000 ? { ...d.rules, initialCapital: 10000 } : d.rules,
+        code: typeof d.code === 'string' ? d.code.replace(/initial_capital\s*=\s*100000\b/, 'initial_capital=10000') : d.code,
+      }))
+      : p.strategies ?? current.strategies;
+    const merged = { ...current, ...p, ...panels, chartLink, linkV: 2, backtestBars, paper, strategies, defaultsV: 2, indicatorTemplates: current.indicatorTemplates, profiles: current.profiles, timeZone, fibDefaults, fibV: 2, watchlists, activeWatchlistId, mainListVersion: 7, topBarOrder: order, homeTools, knownTools: ALL_TOOLS, toolOrder: [...new Set(tools)], compares: comparesOf(p as { compareSymbol?: Symbol | null }) };
     // a detached window opens in the main window's theme (a saved workspace may hold the other one)
     const theme = POPOUT_ID ? mainTheme() : null;
-    return theme && theme !== merged.uiTheme ? { ...merged, ...switchTheme(merged, theme) } : merged;
+    const themed = theme && theme !== merged.uiTheme ? { ...merged, ...switchTheme(merged, theme) } : merged;
+    // a chart saved with the other theme's colors (a dark window with a white chart) takes this theme's
+    return fitsTheme(themed.chartSettings, themed.uiTheme) ? themed : { ...themed, chartSettings: chartSettingsFor(themed.uiTheme, themed.themeChartSettings?.[themed.uiTheme]) };
   },
 }));
 

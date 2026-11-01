@@ -21,7 +21,9 @@ export type Expr =
   | { k: 'tern'; id: number; c: Expr; a: Expr; b: Expr }
   | { k: 'call'; id: number; fn: string; args: Expr[]; named: Record<string, Expr>; line: number }
   | { k: 'tuple'; id: number; items: Expr[] }
-  | { k: 'ifx'; id: number; branches: { cond: Expr | null; body: Stmt[] }[] };
+  | { k: 'ifx'; id: number; branches: { cond: Expr | null; body: Stmt[] }[] }
+  // switch [subject]: the first case equal to the subject (without one: the first true case), else the default (val null)
+  | { k: 'switchx'; id: number; subject: Expr | null; cases: { val: Expr | null; body: Stmt[] }[] };
 
 export type Stmt =
   | { k: 'decl'; name: string; e: Expr; isVar: boolean; line: number }
@@ -61,6 +63,20 @@ function bracketDelta(code: string): number {
     else if (ch === ')' || ch === ']') d--;
   }
   return d;
+}
+
+// a switch case "value => result": the text before and after its "=>" (outside strings and brackets)
+function splitArrow(text: string): [string, string] | null {
+  let d = 0, quote: string | null = null;
+  for (let i = 0; i < text.length - 1; i++) {
+    const ch = text[i];
+    if (quote) { if (ch === '\\') i++; else if (ch === quote) quote = null; continue; }
+    if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === '(' || ch === '[') d++;
+    else if (ch === ')' || ch === ']') d--;
+    else if (d === 0 && ch === '=' && text[i + 1] === '>') return [text.slice(0, i), text.slice(i + 2)];
+  }
+  return null;
 }
 
 // joins wrapped lines (open brackets, trailing operator, or Pine's "indent not
@@ -280,9 +296,29 @@ export function parsePine(src: string): Program {
     return branches;
   }
 
+  // switch [subject], its cases indented below: "value => result" or "value =>" and an indented
+  // block, "=> result" for the default; as statement or as the value of an assignment
+  function switchCases(subject: Tok[], indent: number, no: number): Expr {
+    if (i >= lines.length || lines[i].indent <= indent) throw new PineError('switch sans cas : les lignes suivantes doivent être indentées', no);
+    const cases: { val: Expr | null; body: Stmt[] }[] = [];
+    while (i < lines.length && lines[i].indent === indent + 1) {
+      const ln = lines[i++];
+      const parts = splitArrow(ln.text);
+      if (!parts) throw new PineError('« => » attendu dans un cas du switch (valeur => résultat)', ln.no);
+      const [head, tail] = parts;
+      // a result on the same line is read as the case's one-line block
+      if (tail.trim()) lines.splice(i, 0, { indent: indent + 2, text: tail.trim(), no: ln.no });
+      cases.push({ val: head.trim() ? parseExprTokens(tokenize(head, ln.no), ln.no) : null, body: subBlock(indent + 1, ln.no) });
+    }
+    if (i < lines.length && lines[i].indent > indent) throw new PineError('indentation inattendue dans le switch', lines[i].no);
+    const def = cases.findIndex((c) => c.val === null);
+    if (def >= 0 && def < cases.length - 1) throw new PineError('le cas par défaut (=> …) doit être le dernier du switch', no);
+    return { k: 'switchx', id: nodeSeq++, subject: subject.length ? parseExprTokens(subject, no) : null, cases };
+  }
+
   function rhs(toks: Tok[], indent: number, no: number): Expr {
     if (toks[0]?.t === 'id' && toks[0].v === 'if') return { k: 'ifx', id: nodeSeq++, branches: ifChain(toks.slice(1), indent, no) };
-    if (toks[0]?.t === 'id' && toks[0].v === 'switch') throw new PineError('« switch » n’est pas encore pris en charge (utilisez if / else if)', no);
+    if (toks[0]?.t === 'id' && toks[0].v === 'switch') return switchCases(toks.slice(1), indent, no);
     return parseExprTokens(toks, no);
   }
 

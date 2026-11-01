@@ -6,9 +6,10 @@ import { pricePrecision } from '../chartUtils';
 import { SymbolLogo } from '../SymbolLogo';
 import ToolIcon from './ToolIcon';
 import {
-  TOOL_LABELS, activateTab, autosaveLayout, closeOtherTabs, closeTab, duplicateTab, freshChart, moveTab, newTab, reopenClosedTab,
+  TOOL_LABELS, activateTab, autosaveLayout, closeOtherTabs, closeTab, detachTab, duplicateTab, freshChart, moveTab, newTab, reopenClosedTab,
 } from './tabActions';
 import { getDragSymbol, isSymbolDrag } from '../symbolDnd';
+import { droppedOutsideWindow } from '../popouts';
 import type { Symbol } from '../../types';
 import { LOCALE } from '../../i18n/lang';
 
@@ -68,6 +69,11 @@ export default function TabBar() {
   const setUiTheme = useStore((s) => s.setUiTheme);
   const [ctx, setCtx] = useState<{ x: number; y: number; id: string } | null>(null);
   const [more, setMore] = useState(false);
+  // the tab shown always in sight, however many are open
+  const listRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    listRef.current?.querySelector(`[data-tab="${activeId}"]`)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [activeId, tabs.length]);
   const [dropAt, setDropAt] = useState<number | null>(null);
   const drag = useRef<number | null>(null);
   // a symbol dragged from a list over the tabs: where its new chart tab would go
@@ -113,7 +119,10 @@ export default function TabBar() {
     <div className="tab2-bar">
       {/* a symbol dropped on the tabs opens in a new chart tab, after the tab it is dropped on (at the end elsewhere) */}
       <div
+        ref={listRef}
         className={`tab2-list ${symAt != null ? 'sym-drop' : ''}`}
+        // many tabs: the wheel scrolls them sideways
+        onWheel={(e) => { if (e.deltaY && e.currentTarget.scrollWidth > e.currentTarget.clientWidth) e.currentTarget.scrollLeft += e.deltaY; }}
         onDragOver={(e) => { if (!overSymbol(e, tabs.length)) e.preventDefault(); }}
         onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setSymAt(null); }}
         onDrop={(e) => { if (isSymbolDrag(e)) dropSymbol(e, tabs.length); }}
@@ -122,8 +131,15 @@ export default function TabBar() {
           <div
             key={t.id} title={tip(t)}
             className={`tab2 ${t.id === activeId ? 'active' : ''} ${dropAt === i ? 'drop' : ''} ${symAt === i + 1 ? 'sym-after' : ''}`}
+            data-tab={t.id}
             draggable
-            onDragStart={() => { drag.current = i; }}
+            onDragStart={(e) => { drag.current = i; e.dataTransfer.effectAllowed = 'move'; }}
+            // dropped outside the browser window (another screen): the tab in a window of its own
+            onDragEnd={(e) => {
+              drag.current = null;
+              setDropAt(null);
+              if (e.dataTransfer.dropEffect === 'none' && droppedOutsideWindow(e)) detachTab(t.id, { x: e.screenX, y: e.screenY });
+            }}
             onDragOver={(e) => { if (overSymbol(e, i + 1)) return; e.preventDefault(); setDropAt(i); }}
             onDragLeave={() => setDropAt(null)}
             onDrop={(e) => {

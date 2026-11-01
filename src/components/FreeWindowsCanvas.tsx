@@ -26,7 +26,7 @@ export default function FreeWindowsCanvas() {
         e.preventDefault();
         const r = e.currentTarget.getBoundingClientRect();
         // the window's title bar lands under the cursor
-        addFreeWindow(sym.ticker, {
+        addFreeWindow(sym, {
           x: e.clientX - r.left + e.currentTarget.scrollLeft - 60,
           y: e.clientY - r.top + e.currentTarget.scrollTop - 12,
         });
@@ -37,7 +37,7 @@ export default function FreeWindowsCanvas() {
         <div className="free-empty">Glissez un actif de la liste de droite ici pour ouvrir une fenêtre</div>
       )}
       {dropHint && <div className="free-drop-hint">Déposez pour ouvrir une fenêtre</div>}
-      <button className="free-add-btn" onClick={() => addFreeWindow(symbol.ticker)} title="Ou glissez un actif de la liste de droite dans cette zone">
+      <button className="free-add-btn" onClick={() => addFreeWindow(symbol)} title="Ou glissez un actif de la liste de droite dans cette zone">
         ＋ Nouvelle fenêtre
       </button>
     </div>

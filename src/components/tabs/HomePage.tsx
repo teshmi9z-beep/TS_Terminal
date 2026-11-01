@@ -70,7 +70,7 @@ function LayoutCard({ ws, fav }: { ws: Workspace; fav: boolean }) {
   }, [menu]);
   const act = (f: () => void) => (e: React.MouseEvent) => { e.stopPropagation(); setMenu(false); f(); };
   return (
-    <div className="home-layout" onClick={() => openLayout(ws)} title={openTab ? 'Déjà ouverte dans un onglet' : 'Ouvrir la mise en page'}>
+    <div className="home-layout" onClick={() => openLayout(ws)} title={openTab ? 'Déjà ouverte dans un onglet : un clic en ouvre une copie ici (un nouveau graphique)' : 'Ouvrir la mise en page'}>
       <button className={`home-star ${fav ? 'on' : ''}`} title={fav ? 'Retirer des favoris' : 'Ajouter aux favoris'} onClick={(e) => { e.stopPropagation(); toggleFav(ws.id); }}>{fav ? '★' : '☆'}</button>
       <div className="home-layout-name">{ws.name}{openTab && <span className="home-open-dot" />}</div>
       <div className="home-layout-meta">{main.symbol?.ticker ?? '—'}, {main.timeframe ?? '—'} • {ws.savedAt ? shortDate(ws.savedAt) : '—'}</div>

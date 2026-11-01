@@ -1,8 +1,11 @@
-import { useStore, nextId, comparesOf, TAB_KEYS, type AppTab, type TabChartState, type ToolId, type Workspace } from '../../store/store';
+import { useStore, nextId, comparesOf, chartSettingsFor, fitsTheme, POPOUT_TOOL, TAB_KEYS, type AppTab, type TabChartState, type ToolId, type Workspace } from '../../store/store';
 import { useChartUi } from '../../store/chartUi';
 import { INDICATORS } from '../../indicators/registry';
-import { capturePopouts, captureWorkspace, openWorkspacePopouts } from '../workspaces';
-import type { IndicatorConfig, Symbol, Timeframe } from '../../types';
+import { capturePopouts, captureWorkspace, openWorkspacePopouts, seedPopout } from '../workspaces';
+import { ensureScreenAccess, onOtherScreen, openPopout } from '../popouts';
+import { sendToMain } from '../toolWindows';
+import { readKept } from '../kept';
+import { TIME_TIMEFRAMES, type IndicatorConfig, type Symbol, type Timeframe } from '../../types';
 
 // Top tabs like TradingView's desktop app: every chart tab is a layout with its own
 // chart; the active chart lives in the store, the others wait in their tab.
@@ -42,7 +45,7 @@ export function freshChart(sym?: Symbol): TabChartState {
   const st = useStore.getState();
   const vol = INDICATORS.VOLUME;
   return {
-    symbol: sym ?? st.symbol, timeframe: st.timeframe, layout: 1, freeWindows: [], gridCharts: [], priceScaleMode: 'normal', compares: [],
+    symbol: sym ?? st.symbol, timeframe: st.timeframe, layout: 1, freeWindows: [], gridCharts: [], priceScaleMode: 'normal', compares: [], indicatorTemplate: null,
     chartSettings: st.chartSettings,
     indicators: [{ id: nextId(), type: 'VOLUME', overlay: false, visible: true, ...clone(vol.defaults) }],
     testerRobot: null,
@@ -81,7 +84,10 @@ function loadChart(tab: AppTab) {
   // tabs saved before the tester followed a robot show their strategy
   // (a tab saved before the compare list carries a single compareSymbol)
   // a tab saved before the 2 / 4 window charts were kept has none of its own
-  if (tab.state) useStore.setState({ testerRobot: null, gridCharts: [], ...clone(tab.state), compares: comparesOf(clone(tab.state)) });
+  if (tab.state) useStore.setState({ testerRobot: null, gridCharts: [], indicatorTemplate: null, ...clone(tab.state), compares: comparesOf(clone(tab.state)) });
+  // a tab left in the other theme keeps its chart colors for that theme: this one's are shown
+  const st = useStore.getState();
+  if (!fitsTheme(st.chartSettings, st.uiTheme)) useStore.setState({ chartSettings: chartSettingsFor(st.uiTheme, st.themeChartSettings[st.uiTheme]) });
   useStore.setState({ currentWorkspaceId: tab.layoutId ?? null });
   // the tab's replay comes back paused where it was left
   const ui = useChartUi.getState();
@@ -184,6 +190,7 @@ export function moveTab(from: number, to: number) {
 }
 
 export function openTool(tool: ToolId, inNewTab = false) {
+  if (POPOUT_TOOL) { sendToMain({ type: 'tool', tool }); return; }
   const st = useStore.getState();
   if (tool === 'screener' || tool === 'heatmap') st.setScreener({ mode: 'stocks' });
   if (inNewTab || active()?.kind === 'chart') newTab({ kind: 'tool', tool });
@@ -197,13 +204,15 @@ const layoutState = (ws: Workspace): TabChartState => {
   return { ...freshChart(), ...(clone(out) as TabChartState) };
 };
 
-// a saved layout: the tab already showing it, else this tab (or a new one)
+// a saved layout in this tab (or a new one). One already open in another tab opens again as an
+// unsaved copy (its chart as that tab shows it, without its detached windows): a new chart in one
+// click from the "Nouvel onglet" page, the layout itself left to its tab
 export function openLayout(ws: Workspace, inNewTab = false) {
-  const st = useStore.getState();
-  const open = st.tabs.find((t) => t.kind === 'chart' && t.layoutId === ws.id);
-  openLayoutWindows(ws);
-  if (open) { activateTab(open.id); return; }
-  const tab = { kind: 'chart' as const, layoutId: ws.id, state: layoutState(ws) };
+  const open = stashed().find((t) => t.kind === 'chart' && t.layoutId === ws.id);
+  const tab = open
+    ? { kind: 'chart' as const, layoutId: null, state: clone(open.state ?? layoutState(ws)) }
+    : { kind: 'chart' as const, layoutId: ws.id, state: layoutState(ws) };
+  if (!open) openLayoutWindows(ws);
   if (inNewTab || active()?.kind === 'chart') newTab(tab);
   else turnActiveInto(tab);
 }
@@ -221,6 +230,7 @@ export function createLayout() {
 
 // back to the last chart used (or a new chart tab)
 export function goToChart(sym?: Symbol) {
+  if (POPOUT_TOOL) { sendToMain({ type: 'goToChart', symbol: sym }); return; }
   const st = useStore.getState();
   if (active()?.kind === 'chart') return;
   const target = st.tabs.find((t) => t.id === lastChartTab && t.kind === 'chart') ?? [...st.tabs].reverse().find((t) => t.kind === 'chart');
@@ -231,12 +241,62 @@ export function goToChart(sym?: Symbol) {
 // a chart of its own for what a tool page shows (a lab robot): a new tab on that symbol
 // and timeframe with these indicators, whatever the other charts show
 export function openChartTab(sym: Symbol, tf: Timeframe, indicators: IndicatorConfig[], extra: TabChartState = {}) {
+  if (POPOUT_TOOL) { sendToMain({ type: 'chartTab', symbol: sym, tf, indicators, extra }); return; }
   const base = freshChart(sym);
   newTab({ kind: 'chart', layoutId: null, state: { ...base, timeframe: tf, indicators: [...(base.indicators ?? []), ...indicators], ...extra } });
 }
 
-// a symbol picked in a tool page opens on the last chart used (or a new chart tab)
+// the outlined chart of the 2 / 4 windows (MultiChartGrid), the one the lists change
+export const GRID_ACTIVE_KEY = 'grid.active';
+function activeGridChart(n: number): number {
+  const k = readKept(GRID_ACTIVE_KEY, 0);
+  return k < n ? k : 0;
+}
+
+// a symbol picked in the screener: a chart tab of its own, on one window, with the indicators
+// of the last chart used (a timeframe in ticks becomes daily: Yahoo has none for stocks)
+export function openSymbolTab(sym: Symbol) {
+  const st = useStore.getState();
+  const tf = TIME_TIMEFRAMES.includes(st.timeframe) ? st.timeframe : '1D';
+  openChartTab(sym, tf, [], { indicators: clone(st.indicators), indicatorTemplate: st.indicatorTemplate });
+}
+
+// a symbol picked in a tool page opens on the last chart used (or a new chart tab); a chart tab
+// in 2 / 4 windows shows it on its active chart, which its grid, not mounted yet, can't follow
 export function showOnChart(sym: Symbol) {
+  if (POPOUT_TOOL) { sendToMain({ type: 'show', symbol: sym }); return; }
   goToChart(sym);
-  useStore.getState().setSymbol(sym);
+  const st = useStore.getState();
+  st.setSymbol(sym);
+  if (typeof st.layout === 'number' && st.layout > 1) st.setGridChart(activeGridChart(st.layout), { ticker: sym.ticker, symbol: sym });
+}
+
+// A tab dragged out of the browser window, like a browser tab: in a window of its own where it was
+// dropped (on another screen too, once Chrome allows "Gestion des fenêtres"), a chart with its
+// chart, a tool with its page. It leaves the tabs here ("Rouvrir l’onglet fermé" brings it back).
+export function detachTab(id: string, at: { x: number; y: number }) {
+  const st = useStore.getState();
+  const tab = stashed().find((t) => t.id === id);
+  if (!tab || tab.kind === 'home') return;
+  const place = {
+    left: at.x - 120, top: at.y - 16,
+    width: Math.min(1400, Math.max(700, window.outerWidth * 0.8)), height: Math.min(900, Math.max(450, window.outerHeight * 0.8)),
+  };
+  let opened: boolean;
+  if (tab.kind === 'tool' && tab.tool) {
+    opened = openPopout(st.symbol, st.timeframe, place, undefined, false, undefined, tab.tool);
+  } else {
+    const state = tab.state ?? {};
+    const pid = `p${nextId()}`;
+    seedPopout(pid, state);
+    opened = openPopout(state.symbol ?? st.symbol, state.timeframe ?? st.timeframe, place, pid);
+  }
+  if (!opened) return;
+  closeTab(id);
+  // put on another screen only with the window management permission (asked once)
+  if (onOtherScreen(place)) {
+    void ensureScreenAccess(true).then((ok) => {
+      if (!ok) useChartUi.getState().showToast('Pour l’ouvrir directement sur l’autre écran, autorisez « Gestion des fenêtres » quand Chrome le demande (icône à gauche de l’adresse)');
+    });
+  }
 }

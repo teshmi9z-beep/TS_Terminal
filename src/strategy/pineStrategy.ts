@@ -53,7 +53,7 @@ export function inspectPineStrategy(source: string): PineStrategyInfo {
   } catch (e) {
     return {
       error: e instanceof Error ? e.message : String(e), warnings: [], title: 'Stratégie', isStrategy: false, inputs: [],
-      settings: { initialCapital: 100000, qtyMode: 'fixed', qtyValue: 1, commissionType: 'percent', commissionValue: 0, fillOnClose: false },
+      settings: { initialCapital: 10000, qtyMode: 'fixed', qtyValue: 1, commissionType: 'percent', commissionValue: 0, fillOnClose: false },
     };
   }
 }

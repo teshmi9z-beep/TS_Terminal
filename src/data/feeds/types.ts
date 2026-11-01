@@ -1,7 +1,8 @@
 import type { Candle } from '../../types';
 
-// local: bars saved on this computer (offline); ib: Interactive Brokers through the local IB Gateway
-export type FeedSource = 'binance' | 'yahoo' | 'ib' | 'sim' | 'local';
+// local: bars saved on this computer (offline); ib: Interactive Brokers through the local IB Gateway;
+// ig: IG's own prices, through the IG relay of the account picked in the "Trader" menu
+export type FeedSource = 'binance' | 'yahoo' | 'ib' | 'ig' | 'sim' | 'local';
 
 // market: Binance spot (default) or USDⓈ-M futures
 export type FeedRef = { source: FeedSource; id: string; market?: 'spot' | 'futures' };

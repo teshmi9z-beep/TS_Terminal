@@ -29,6 +29,7 @@ function forEachCall(body: Stmt[], cb: (c: Extract<Expr, { k: 'call' }>) => void
       case 'tern': ex(e.c); ex(e.a); ex(e.b); break;
       case 'tuple': e.items.forEach(ex); break;
       case 'ifx': e.branches.forEach((b) => { ex(b.cond); st(b.body); }); break;
+      case 'switchx': ex(e.subject); e.cases.forEach((c) => { ex(c.val); st(c.body); }); break;
       default: break;
     }
   };

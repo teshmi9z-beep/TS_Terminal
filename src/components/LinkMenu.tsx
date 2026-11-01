@@ -48,6 +48,8 @@ export default function LinkMenu() {
         onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setAt(at ? null : { left: Math.max(4, Math.min(r.left, window.innerWidth - 330)), top: r.bottom + 4 }); }}
       >
         <ChainIcon />
+        {/* the principal window, where the watchlist opens its symbols */}
+        {link.principal && <span className="tb-link-star" title="Graphique principal">★</span>}
       </button>
       {at && (
         <>
@@ -55,15 +57,19 @@ export default function LinkMenu() {
           <div className="link-menu" style={{ left: at.left, top: at.top }}>
             <div className="link-title">Lier par instrument</div>
             <Groups kind="symbol" value={link.symbol} onPick={(g) => set({ symbol: g })} />
-            <label className="link-check" title={link.principal ? 'Pour changer, cochez-le dans une autre fenêtre' : undefined}>
-              <input type="checkbox" checked={link.principal} disabled={link.principal} onChange={(e) => set({ principal: e.target.checked })} />
-              <span>Définir comme graphique principal <small>(la liste de surveillance ouvre ses symboles ici)</small></span>
-            </label>
+            {/* one window is the principal one: said plainly here, taken over by a click in another window */}
+            {link.principal ? (
+              <div className="link-principal">★ Graphique principal <small>: la liste de surveillance ouvre ses symboles ici. Pour en changer, cliquez « Définir comme graphique principal » dans une autre fenêtre.</small></div>
+            ) : (
+              <button className="pill-btn link-principal-btn" onClick={() => set({ principal: true })}>
+                ★ Définir comme graphique principal <small>(la liste de surveillance ouvrira ses symboles ici)</small>
+              </button>
+            )}
             <div className="link-title">Lier par unité de temps</div>
-            <Groups kind="tf" value={link.tf} onPick={(g) => set({ tf: g })} />
+            <Groups kind="tf" value={link.tf} onPick={(g) => set(g ? { tf: g, bars: true } : { tf: g })} />
             <label className="link-check">
               <input type="checkbox" checked={link.bars} disabled={!link.tf} onChange={(e) => set({ bars: e.target.checked })} />
-              <span>Lier la quantité d’historique affiché <small>(même nombre de bougies à l’écran)</small></span>
+              <span>Lier le zoom <small>(même nombre de bougies à l’écran : zoomer ou dézoomer l’un fait pareil sur les autres)</small></span>
             </label>
             <div className="link-title">Lier le défilement de l’échelle de temps</div>
             <Groups kind="scroll" value={link.scroll} onPick={(g) => set({ scroll: g })} />

@@ -1,8 +1,8 @@
 import { tvScan, num, str } from './tv';
 
 // Calendars of the "Calendrier" page.
-// - economic: ForexFactory's public weekly feed (current week only), relayed as /ffcal;
-//   it gives the forecast and previous values, not the actual one;
+// - economic: ForexFactory's public weekly feed (current week only), relayed as /ffcal, for the
+//   events, forecast and previous values; the actual ones from TradingView's calendar (/tvcal);
 // - earnings / dividends / IPO: TradingView's screener, for any week.
 
 // ---------------------------------------------------------------- countries
@@ -73,12 +73,37 @@ export type EcoEvent = {
 
 let ecoCache: { at: number; events: EcoEvent[] } | null = null;
 
+// TradingView's calendar for the actual figures: each ForexFactory event takes the actual of the
+// TradingView event of its country at the same time (the closest title when there are several)
+type TvEco = { title: string; country: string; date: string; actual: number | null; unit?: string; scale?: string };
+const words = (s: string) => new Set(s.toLowerCase().replace(/y\/y/g, 'yoy').replace(/m\/m/g, 'mom').replace(/q\/q/g, 'qoq').replace(/prelim\b/g, 'prel')
+  .replace(/\bcpi\b/g, 'inflation').replace(/\bhicp\b/g, 'harmonised inflation')
+  .split(/[^a-z0-9]+/).filter((w) => w.length > 1));
+async function addActuals(events: (EcoEvent & { en: string })[]) {
+  if (!events.length) return;
+  const from = new Date((events[0].time - 3600) * 1000).toISOString(), to = new Date((events[events.length - 1].time + 3600) * 1000).toISOString();
+  const countries = [...new Set(events.map((e) => e.country.toUpperCase()))].join(',');
+  const r = await fetch(`/tvcal/events?from=${from}&to=${to}&countries=${countries}`);
+  if (!r.ok) return;
+  const tv = ((await r.json()) as { result?: TvEco[] }).result ?? [];
+  for (const e of events) {
+    if (e.actual) continue;
+    const same = tv.filter((x) => x.actual != null && x.country === e.country.toUpperCase() && Math.abs(Date.parse(x.date) / 1000 - e.time) <= 120);
+    const mine = words(e.en);
+    // the most words in common, then the fewest extra ones (CPI rather than the harmonised CPI)
+    const score = (x: TvEco) => { const w = [...words(x.title)], hit = w.filter((t) => mine.has(t)).length; return hit ? hit * 10 - (w.length - hit) : 0; };
+    const best = same.length === 1 ? same[0] : same.map((x) => ({ x, s: score(x) })).filter((c) => c.s > 0).sort((a, b) => b.s - a.s)[0]?.x;
+    if (best) e.actual = `${best.actual}${best.unit === '%' ? '%' : best.scale ?? ''}`;
+  }
+}
+
 export async function fetchEconomic(): Promise<EcoEvent[]> {
-  if (ecoCache && Date.now() - ecoCache.at < 10 * 60_000) return ecoCache.events;
+  // a few minutes only: the actual figures come in as they are published
+  if (ecoCache && Date.now() - ecoCache.at < 3 * 60_000) return ecoCache.events;
   const r = await fetch('/ffcal/ff_calendar_thisweek.json');
   if (!r.ok) throw new Error(`calendrier économique indisponible (${r.status})`);
   const json = (await r.json()) as { title: string; country: string; date: string; impact: string; forecast: string; previous: string; actual?: string }[];
-  const events = json.map((e): EcoEvent => {
+  const withEn = json.map((e) => {
     let country = CURRENCY_COUNTRY[e.country] ?? e.country.toLowerCase();
     let title = e.title;
     if (e.country === 'EUR') {
@@ -86,11 +111,13 @@ export async function fetchEconomic(): Promise<EcoEvent[]> {
       if (p) { country = p[1]; title = title.replace(p[0], ''); }
     }
     return {
-      title: eventFr(title), country, category: categoryOf(e.title), time: Date.parse(e.date) / 1000,
+      en: title, title: eventFr(title), country, category: categoryOf(e.title), time: Date.parse(e.date) / 1000,
       impact: (['Low', 'Medium', 'High', 'Holiday'].includes(e.impact) ? e.impact : 'Low') as EcoEvent['impact'],
       forecast: e.forecast ?? '', previous: e.previous ?? '', actual: e.actual ?? '',
     };
   }).sort((a, b) => a.time - b.time);
+  await addActuals(withEn).catch(() => undefined);
+  const events = withEn.map(({ en: _en, ...e }): EcoEvent => e);
   ecoCache = { at: Date.now(), events };
   return events;
 }

@@ -7,7 +7,8 @@
 .tab2-bar { display: flex; align-items: center; height: 36px; flex-shrink: 0; background: var(--tabbar-bg); padding: 0 6px; gap: 6px; user-select: none; }
 .tab2-list { display: flex; align-items: center; gap: 2px; min-width: 0; flex: 1; overflow-x: auto; scrollbar-width: none; }
 .tab2-list::-webkit-scrollbar { display: none; }
-.tab2 { position: relative; display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 6px 0 10px; border-radius: 6px; cursor: pointer; color: var(--text-muted); max-width: 260px; min-width: 110px; flex-shrink: 0; }
+/* many tabs: they narrow (down to 72 px, like TradingView's) before the list scrolls */
+.tab2 { position: relative; display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 6px 0 10px; border-radius: 6px; cursor: pointer; color: var(--text-muted); max-width: 260px; min-width: 72px; flex: 0 1 auto; }
 .tab2:hover { background: var(--bg-hover); color: var(--text); }
 .tab2.active { background: var(--bg-panel); color: var(--text-bright); }
 .tab2.drop { box-shadow: inset 2px 0 0 var(--accent); }

@@ -119,7 +119,7 @@ const failedLogos = new Set<string>();
 // the CoinShares ETPs wear their coin's logo
 const ETP_COIN: Record<string, string> = { BITC: 'BTC', CETH: 'ETH', SLNC: 'SOL', XRPL: 'XRP' };
 
-type LogoSym = Pick<Symbol, 'ticker' | 'category'> & Partial<Pick<Symbol, 'yahoo'>>;
+type LogoSym = Pick<Symbol, 'ticker' | 'category'> & Partial<Pick<Symbol, 'yahoo' | 'ig'>>;
 
 function logoUrls(sym: LogoSym): { urls: string[]; coin: boolean } {
   const coinOf = ETP_COIN[sym.ticker] ?? (sym.category === 'Crypto' ? sym.ticker.replace(/(USDT|USDC|USD)$/, '') : null);
@@ -147,6 +147,10 @@ function logoUrls(sym: LogoSym): { urls: string[]; coin: boolean } {
 export function SymbolLogo({ sym, size = 20 }: { sym: LogoSym; size?: number }) {
   // re-render once a logo fails to load, to try the next source
   const [, setFailures] = useState(0);
+  // an IG market: IG's logo (its prices are IG's)
+  if (sym.ig) {
+    return <span className="bk-logo" style={{ width: size, height: size, background: '#e8412c', color: '#fff', fontSize: size * 0.4 }} translate="no">IG</span>;
+  }
   const flags = sym.category === 'Forex' ? forexFlags(sym.ticker) : null;
   if (flags) {
     return (

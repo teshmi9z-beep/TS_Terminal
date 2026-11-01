@@ -1,4 +1,4 @@
-import { useStore, nextId, comparesOf, WORKSPACE_KEYS, type Popout, type Workspace, type WorkspaceChartState } from '../store/store';
+import { useStore, nextId, comparesOf, chartSettingsFor, fitsTheme, WORKSPACE_KEYS, type Popout, type Workspace, type WorkspaceChartState } from '../store/store';
 import { useChartUi } from '../store/chartUi';
 import { closeAllPopouts, ensureScreenAccess, onOtherScreen, reopenPopout } from './popouts';
 import { endReplaySession } from './tradingAccount';
@@ -21,11 +21,17 @@ function readPopoutState(id: string): WorkspaceChartState {
   }
 }
 
+// a detached chart window's saved state written before it opens: the main window's, with this chart
+export function seedPopout(id: string, state: WorkspaceChartState) {
+  const seed = { ...pickChartState(useStore.getState() as unknown as Record<string, unknown>), ...state, layout: 1, popouts: [], workspaces: [] };
+  localStorage.setItem(POPOUT_KEY(id), JSON.stringify({ state: { ...seed, drawings: useStore.getState().drawings }, version: 0 }));
+}
+
 // the open detached windows (all, or those of one layout), with their place and content
 export function capturePopouts(layoutId?: string): Workspace['popouts'] {
   return useStore.getState().popouts
     .filter((p) => p.open && (layoutId === undefined || p.layoutId === layoutId))
-    .map((p) => ({ symbol: p.symbol, tf: p.tf, left: p.left, top: p.top, width: p.width, height: p.height, state: readPopoutState(p.id) }));
+    .map((p) => ({ symbol: p.symbol, tf: p.tf, left: p.left, top: p.top, width: p.width, height: p.height, state: p.tool ? {} : readPopoutState(p.id), ...(p.tool ? { tool: p.tool } : {}) }));
 }
 
 // snapshot of the main window and of every open detached window (with its position)
@@ -60,10 +66,9 @@ export async function openWorkspacePopouts(list: Workspace['popouts'], layoutId:
   const blocked: Popout[] = [];
   for (const p of list) {
     const id = `p${nextId()}`;
-    // seed the window's own saved state before it opens
-    const seed = { ...pickChartState(useStore.getState() as unknown as Record<string, unknown>), ...p.state, layout: 1, popouts: [], workspaces: [] };
-    localStorage.setItem(POPOUT_KEY(id), JSON.stringify({ state: { ...seed, drawings: useStore.getState().drawings }, version: 0 }));
-    const popout: Popout = { id, symbol: p.symbol, tf: p.tf, open: false, left: p.left, top: p.top, width: p.width, height: p.height, layoutId };
+    // a chart window's own saved state, before it opens (a tool window reads the main one's)
+    if (!p.tool) seedPopout(id, p.state);
+    const popout: Popout = { id, symbol: p.symbol, tf: p.tf, open: false, left: p.left, top: p.top, width: p.width, height: p.height, layoutId, ...(p.tool ? { tool: p.tool } : {}) };
     if (!reopenPopout(popout, true)) {
       useStore.getState().upsertPopout(popout);
       blocked.push(popout);
@@ -81,7 +86,10 @@ export async function applyWorkspace(ws: Workspace, { saveUndo = true } = {}) {
   closeAllPopouts();
   for (const id of previous) localStorage.removeItem(POPOUT_KEY(id));
 
-  useStore.setState({ gridCharts: [], ...ws.main, compares: comparesOf(ws.main), popouts: [], activeTool: 'cursor', selectedDrawingId: null });
+  useStore.setState({ gridCharts: [], indicatorTemplate: null, ...ws.main, compares: comparesOf(ws.main), popouts: [], activeTool: 'cursor', selectedDrawingId: null });
+  // a workspace saved with the other theme's chart colors gets this theme's
+  const now = useStore.getState();
+  if (!fitsTheme(now.chartSettings, now.uiTheme)) useStore.setState({ chartSettings: chartSettingsFor(now.uiTheme, now.themeChartSettings[now.uiTheme]) });
   // a replay being played ends with the workspace it belonged to
   endReplaySession();
   useChartUi.getState().setReplay({ mode: 'off', playing: false, time: null, at: null });

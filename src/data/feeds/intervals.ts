@@ -30,6 +30,19 @@ export function binancePlan(tf: Timeframe): IntervalPlan | null {
   return plan(BINANCE, tf);
 }
 
+const IG: [string, number][] = [
+  ['MINUTE', 60], ['MINUTE_2', 120], ['MINUTE_3', 180], ['MINUTE_5', 300], ['MINUTE_10', 600], ['MINUTE_15', 900], ['MINUTE_30', 1800],
+  ['HOUR', 3600], ['HOUR_2', 7200], ['HOUR_3', 10800], ['HOUR_4', 14400], ['DAY', 86400],
+];
+
+export function igPlan(tf: Timeframe): IntervalPlan | null {
+  const { n, unit } = parseTf(tf);
+  if (unit === 'T' || unit === 's') return null;
+  if (unit === 'W') return n === 1 ? { native: 'WEEK' } : null;
+  if (unit === 'M') return n === 1 ? { native: 'MONTH' } : null;
+  return plan(IG, tf);
+}
+
 const YAHOO: [string, number][] = [
   ['1m', 60], ['2m', 120], ['5m', 300], ['15m', 900], ['30m', 1800], ['60m', 3600], ['90m', 5400], ['1d', 86400],
 ];

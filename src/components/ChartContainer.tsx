@@ -1,23 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   createChart, ColorType, CrosshairMode, LineStyle, LineType, PriceScaleMode,
-  CandlestickSeries, BarSeries, LineSeries, AreaSeries, HistogramSeries, createSeriesMarkers,
-  type IChartApi, type IPriceLine, type ISeriesApi, type ISeriesMarkersPluginApi, type LineWidth, type SeriesMarker, type SeriesType, type Time, type UTCTimestamp,
+  CandlestickSeries, LineSeries, HistogramSeries, createSeriesMarkers,
+  type IPriceLine, type ISeriesApi, type ISeriesMarkersPluginApi, type LineWidth, type SeriesMarker, type SeriesType, type Time, type UTCTimestamp,
 } from 'lightweight-charts';
 import type { BacktestResult } from '../strategy/types';
 import { useStore, type PanePatch } from '../store/store';
 import { useChartUi, type RangeSpan } from '../store/chartUi';
 import { openFeed, type FeedSession } from '../data/feeds';
 import { reportQuote } from '../data/feeds/quotes';
-import { heikinAshi } from '../indicators/math';
+import { makeMainSeries, ohlcPoint, setSeriesBars, styleKeyOf, updateSeriesLast } from './mainSeries';
 import { getIndicatorDef } from '../indicators/registry';
 import { isSeriesPlot, isShapePlot, type Plot } from '../indicators/types';
 import { paneHostId, sourceCandles, sourceOrder } from '../indicators/derived';
 import { IndicatorShapes } from './indicatorShapes';
-import { styledPlots, plotShown } from '../indicators/style';
+import { styledPlots, plotShown, chartLineStyle } from '../indicators/style';
 import {
   chartColors, pricePrecision, timeFormatters, indexAtOrBefore, isDailyTf, shownOnTimeframe,
-  COLLAPSED_PANE_PX, type ChartEngine,
+  COLLAPSED_PANE_PX, wheelOnPriceAxis, type ChartEngine,
 } from './chartUtils';
 import { mainChart } from './mainChart';
 import DrawingLayer from './DrawingLayer';
@@ -25,6 +25,8 @@ import PaneOverlays from './PaneOverlays';
 import PriceAxisCountdown from './PriceAxisCountdown';
 import ReplayControls from './ReplayControls';
 import ChartTrading from './ChartTrading';
+import ExtendedHoursLine from './ExtendedHoursLine';
+import { syncCrosshair } from './crosshairSync';
 import TradeMarks from './TradeMarks';
 import ChartEvents from './ChartEvents';
 import { CompareOverlay } from './compareSeries';
@@ -32,24 +34,10 @@ import { replayBarShown } from './tradingAccount';
 import { getDragSymbol, isSymbolDrag } from './symbolDnd';
 import { COMPANION_EVENT, setChartBackground, setChartSeries } from '../indicators/companion';
 import { lastSeriesPoint, markersOf, seriesData } from './indicatorSeries';
-import type { Candle, ChartSettings, PriceScaleModeName } from '../types';
+import type { Candle, PriceScaleModeName } from '../types';
 import { LOCALE } from '../i18n/lang';
 
 const ts = (t: number) => t as UTCTimestamp;
-// estimated bars (index futures estimated in real time) are drawn faded
-const fade = (color: string, alpha: number) => {
-  const m = /^#([0-9a-f]{6})$/i.exec(color);
-  if (!m) return color;
-  const n = parseInt(m[1], 16);
-  return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
-};
-const ohlcPoint = (c: Candle) => {
-  const p = { time: ts(c.time), open: c.open, high: c.high, low: c.low, close: c.close };
-  if (!c.est) return p;
-  const s = useStore.getState().chartSettings;
-  const up = c.close >= c.open;
-  return { ...p, color: fade(up ? s.upColor : s.downColor, 0.35), borderColor: fade((up ? s.borderUpColor ?? s.upColor : s.borderDownColor ?? s.downColor), 0.6), wickColor: fade(up ? s.wickUpColor : s.wickDownColor, 0.6) };
-};
 // strategy tester trades on the price series, like TradingView's order markers
 function strategyMarkers(res: BacktestResult): SeriesMarker<Time>[] {
   const out: SeriesMarker<Time>[] = [];
@@ -70,25 +58,6 @@ function strategyMarkers(res: BacktestResult): SeriesMarker<Time>[] {
 const SCALE_MODE: Record<PriceScaleModeName, PriceScaleMode> = {
   normal: PriceScaleMode.Normal, log: PriceScaleMode.Logarithmic, percent: PriceScaleMode.Percentage,
 };
-
-function nextHeikinAshi(prev: Candle | undefined, c: Candle): Candle {
-  const close = (c.open + c.high + c.low + c.close) / 4;
-  const open = prev ? (prev.open + prev.close) / 2 : (c.open + c.close) / 2;
-  return { time: c.time, open, high: Math.max(c.high, open, close), low: Math.min(c.low, open, close), close, volume: c.volume };
-}
-
-function makeMainSeries(chart: IChartApi, s: ChartSettings): ISeriesApi<SeriesType> {
-  if (s.candleStyle === 'bars') return chart.addSeries(BarSeries, { upColor: s.upColor, downColor: s.downColor }, 0);
-  if (s.candleStyle === 'line') return chart.addSeries(LineSeries, { color: '#2962ff', lineWidth: 2 }, 0);
-  if (s.candleStyle === 'area') {
-    return chart.addSeries(AreaSeries, { lineColor: '#2962ff', topColor: 'rgba(41,98,255,0.28)', bottomColor: 'rgba(41,98,255,0.02)', lineWidth: 2 }, 0);
-  }
-  return chart.addSeries(CandlestickSeries, {
-    upColor: s.upColor, downColor: s.downColor,
-    borderUpColor: s.borderUpColor ?? s.upColor, borderDownColor: s.borderDownColor ?? s.downColor,
-    wickUpColor: s.wickUpColor, wickDownColor: s.wickDownColor,
-  }, 0);
-}
 
 export default function ChartContainer() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -133,36 +102,13 @@ export default function ChartContainer() {
   // ---------- main series data ----------
   function setMainData() {
     const e = engine.current;
-    const s = e.mainSeries;
-    if (!s) return;
-    const style = useStore.getState().chartSettings.candleStyle;
-    if (style === 'line' || style === 'area') {
-      s.setData(e.candles.map((c) => ({ time: ts(c.time), value: c.close })));
-    } else if (style === 'heikin_ashi') {
-      haRef.current = heikinAshi(e.candles);
-      s.setData(haRef.current.map(ohlcPoint));
-    } else {
-      s.setData(e.candles.map(ohlcPoint));
-    }
+    if (e.mainSeries) setSeriesBars(e.mainSeries, e.candles, haRef);
   }
 
   function updateMainLast() {
     const e = engine.current;
-    const s = e.mainSeries;
     const c = e.candles[e.candles.length - 1];
-    if (!s || !c) return;
-    const style = useStore.getState().chartSettings.candleStyle;
-    if (style === 'line' || style === 'area') {
-      s.update({ time: ts(c.time), value: c.close });
-    } else if (style === 'heikin_ashi') {
-      const ha = haRef.current;
-      const replacing = ha.length > 0 && ha[ha.length - 1].time === c.time;
-      const bar = nextHeikinAshi(replacing ? ha[ha.length - 2] : ha[ha.length - 1], c);
-      if (replacing) ha[ha.length - 1] = bar; else ha.push(bar);
-      s.update(ohlcPoint(bar));
-    } else {
-      s.update(ohlcPoint(c));
-    }
+    if (e.mainSeries && c) updateSeriesLast(e.mainSeries, c, haRef);
   }
 
   function applyPriceFormat() {
@@ -205,7 +151,7 @@ export default function ChartContainer() {
         const series = seriesPlots.map((p, idx) => {
           const common = {
             priceLineVisible: false,
-            lastValueVisible: true,
+            lastValueVisible: cfg.axisLabels !== false,
             visible: cfg.visible && onTf && plotShown(cfg, p.key),
             priceFormat: def.volumeFormat
               ? { type: 'volume' as const }
@@ -218,7 +164,7 @@ export default function ChartContainer() {
               // Pine plotcandle: colors come with each candle
               ? chart.addSeries(CandlestickSeries, { upColor: p.color, downColor: p.color, ...common }, pane)
               : chart.addSeries(LineSeries, {
-                color: p.color, lineWidth: (p.width ?? 2) as LineWidth, crosshairMarkerRadius: 3,
+                color: p.color, lineWidth: (p.width ?? 2) as LineWidth, lineStyle: chartLineStyle(p.lineStyle), crosshairMarkerRadius: 3,
                 lineType: p.step ? LineType.WithSteps : LineType.Simple, ...common,
               }, pane);
           s.setData(seriesData(p));
@@ -617,24 +563,10 @@ export default function ChartContainer() {
     const preventMenu = (e: MouseEvent) => e.preventDefault();
     el.addEventListener('contextmenu', preventMenu);
 
-    // wheel over the price axis zooms the price scale instead of the time axis
-    function onWheel(ev: WheelEvent) {
-      const rect = el.getBoundingClientRect();
-      const axisW = chart.priceScale('right').width();
-      if (ev.clientX - rect.left < rect.width - axisW) return;
-      const y = ev.clientY - rect.top;
-      if (y > (chart.panes()[0]?.getHeight() ?? 0)) return;
-      ev.preventDefault();
-      const series = engine.current.mainSeries;
-      const scale = series?.priceScale();
-      const range = scale?.getVisibleRange();
-      if (!scale || !range) return;
-      scale.applyOptions({ autoScale: false });
-      const mid = (range.from + range.to) / 2;
-      const k = ev.deltaY > 0 ? 1.1 : 0.9;
-      scale.setVisibleRange({ from: mid - (mid - range.from) * k, to: mid + (range.to - mid) * k });
-    }
-    el.addEventListener('wheel', onWheel, { passive: false });
+    // wheel over a price axis zooms that pane's prices instead of the time axis
+    const offWheel = wheelOnPriceAxis(chart, el, () => engine.current.mainSeries?.priceScale());
+    // the time under the cursor shown on every other chart open (and theirs here)
+    const offCross = syncCrosshair(chart, el, () => engine.current.candles, () => engine.current.mainSeries);
 
     // double-click on the plot: back to auto-scale and the latest bar
     function onDblClick(ev: MouseEvent) {
@@ -666,7 +598,8 @@ export default function ChartContainer() {
       ro.disconnect();
       clearInterval(autoScaleTimer);
       el.removeEventListener('contextmenu', preventMenu);
-      el.removeEventListener('wheel', onWheel);
+      offWheel();
+      offCross();
       el.removeEventListener('dblclick', onDblClick);
       window.removeEventListener('mouseup', onUp);
       window.removeEventListener('touchend', onUp);
@@ -738,7 +671,7 @@ export default function ChartContainer() {
   }, [ready, priceScaleMode, compares]);
 
   // chart style / colors -> recreate the main series
-  const styleKey = `${chartSettings.candleStyle}|${chartSettings.upColor}|${chartSettings.downColor}|${chartSettings.wickUpColor}|${chartSettings.wickDownColor}|${chartSettings.borderUpColor}|${chartSettings.borderDownColor}`;
+  const styleKey = styleKeyOf(chartSettings);
   const styleKeyRef = useRef(styleKey);
   useEffect(() => {
     const chart = engine.current.chart;
@@ -959,6 +892,7 @@ export default function ChartContainer() {
       <TradeMarks engine={engine} />
       <ChartEvents engine={engine} />
       <ChartTrading engine={engine} seriesGen={seriesGen} />
+      <ExtendedHoursLine engine={engine} seriesGen={seriesGen} />
       <ReplayControls engine={engine} containerRef={containerRef} onStep={() => { stepReplay(); }} onRandom={() => { void replayRandom(); }} />
       {feedStatus.loading && <div className="chart-loading chart-ui"><span className="spinner" /> Chargement des données…</div>}
       {!feedStatus.loading && feedStatus.source === 'sim' && (

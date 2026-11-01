@@ -1,5 +1,6 @@
 import type { Candle } from '../../types';
 import { nowSec, type FeedSession, type MarketMeta } from './types';
+import { AggregatedSession } from './aggregate';
 
 // relayed by the Vite dev server (see vite.config.ts) because Yahoo has no CORS
 const BASE = '/yf';
@@ -97,18 +98,26 @@ export class YahooSession implements FeedSession {
   private firstTrade = 0;
   private id: string;
   private interval: string;
+  // with the pre-market and after-hours bars (US shares, intraday), like TradingView's extended hours
+  private prePost: boolean;
 
-  constructor(id: string, interval: string) {
+  constructor(id: string, interval: string, prePost = false) {
     this.id = id;
     const conf = CONF[interval];
     if (!conf) throw new Error(`Yahoo: intervalle ${interval} non supporté`);
     this.conf = conf;
     this.interval = interval;
+    this.prePost = prePost;
   }
 
+  // the exchange's offset from UTC, in seconds (its local dates key the daily bars)
+  gmt = 0;
+
   private async range(p1: number, p2: number) {
-    const path = `/v8/finance/chart/${encodeURIComponent(this.id)}?interval=${this.interval}&period1=${p1}&period2=${p2}&includePrePost=false`;
-    return parseChart(await yfFetch(path), this.conf);
+    const path = `/v8/finance/chart/${encodeURIComponent(this.id)}?interval=${this.interval}&period1=${p1}&period2=${p2}&includePrePost=${this.prePost}`;
+    const parsed = parseChart(await yfFetch(path), this.conf);
+    this.gmt = parsed.meta?.gmtoffset ?? this.gmt;
+    return parsed;
   }
 
   async load(): Promise<Candle[]> {
@@ -146,7 +155,7 @@ export class YahooSession implements FeedSession {
     let failures = 0;
     const tick = async () => {
       try {
-        const json = await yfFetch(`/v8/finance/chart/${encodeURIComponent(this.id)}?interval=${this.interval}&range=${this.conf.liveRange}&includePrePost=false`);
+        const json = await yfFetch(`/v8/finance/chart/${encodeURIComponent(this.id)}?interval=${this.interval}&range=${this.conf.liveRange}&includePrePost=${this.prePost}`);
         if (stopped) return;
         const { candles, meta } = parseChart(json, this.conf);
         for (const c of candles.slice(-2)) onBar(c);
@@ -160,6 +169,115 @@ export class YahooSession implements FeedSession {
     timer = setTimeout(tick, 500);
     return () => { stopped = true; clearTimeout(timer); };
   }
+}
+
+// ---- daily bars rebuilt from hourly ones, keyed like Yahoo's own (the exchange's local date), for
+// the markets whose daily series Yahoo has lost while their hourly history is intact (CETH.PA and
+// BITC.PA in October 2026: one daily bar, today's, against two years of hourly bars)
+class HourlyDays implements FeedSession {
+  readonly source = 'yahoo' as const;
+  readonly label = 'Yahoo Finance';
+  readonly realtime = false;
+  private hours: YahooSession;
+  private base: Candle[] = [];
+
+  constructor(id: string) { this.hours = new YahooSession(id, '60m'); }
+
+  get hasMore() { return this.hours.hasMore; }
+  set hasMore(v: boolean) { this.hours.hasMore = v; }
+
+  private dayOf(t: number) { return Math.floor((t + this.hours.gmt) / DAY) * DAY; }
+
+  private days(bars: Candle[]): Candle[] {
+    const out: Candle[] = [];
+    for (const c of bars) {
+      const t = this.dayOf(c.time);
+      const last = out[out.length - 1];
+      if (last && last.time === t) {
+        last.high = Math.max(last.high, c.high);
+        last.low = Math.min(last.low, c.low);
+        last.close = c.close;
+        last.volume += c.volume;
+      } else out.push({ ...c, time: t });
+    }
+    return out;
+  }
+
+  async load(): Promise<Candle[]> {
+    this.base = await this.hours.load();
+    return this.days(this.base);
+  }
+
+  async loadOlder(): Promise<Candle[]> {
+    const firstDay = this.days(this.base)[0]?.time ?? Infinity;
+    const older = await this.hours.loadOlder();
+    const first = this.base[0]?.time ?? Infinity;
+    this.base = [...older.filter((c) => c.time < first), ...this.base];
+    return this.days(this.base).filter((d) => d.time < firstDay);
+  }
+
+  // the hourly bar in progress makes the day in progress
+  subscribe(onBar: (c: Candle) => void, onMeta?: (m: MarketMeta) => void): () => void {
+    return this.hours.subscribe((b) => {
+      const i = this.base.findIndex((c) => c.time >= b.time);
+      if (i < 0) this.base.push(b);
+      else if (this.base[i].time === b.time) this.base[i] = b;
+      else this.base.splice(i, 0, b);
+      const day = this.dayOf(b.time);
+      const today = this.days(this.base.filter((c) => this.dayOf(c.time) === day))[0];
+      if (today) onBar(today);
+    }, onMeta);
+  }
+}
+
+// Yahoo's daily or weekly bars; rebuilt from the hourly ones when Yahoo has fewer than two
+export class YahooDailySession implements FeedSession {
+  readonly source = 'yahoo' as const;
+  readonly label = 'Yahoo Finance';
+  readonly realtime = false;
+  private id: string;
+  private interval: '1d' | '1wk';
+  private inner: FeedSession;
+
+  constructor(id: string, interval: '1d' | '1wk') {
+    this.id = id;
+    this.interval = interval;
+    this.inner = new YahooSession(id, interval);
+  }
+
+  get hasMore() { return this.inner.hasMore; }
+  set hasMore(v: boolean) { this.inner.hasMore = v; }
+
+  async load(): Promise<Candle[]> {
+    const bars = await this.inner.load().catch((): Candle[] => []);
+    if (bars.length >= 2) return bars;
+    const days = new HourlyDays(this.id);
+    // weeks from Monday (1970-01-01 was a Thursday)
+    this.inner = this.interval === '1wk' ? new AggregatedSession(days, 7 * DAY, false, 4 * DAY) : days;
+    return this.inner.load();
+  }
+
+  loadOlder(): Promise<Candle[]> { return this.inner.loadOlder(); }
+
+  subscribe(onBar: (c: Candle) => void, onMeta?: (m: MarketMeta) => void): () => void { return this.inner.subscribe(onBar, onMeta); }
+}
+
+// ---- a US share's pre-market / after-hours price, from its chart with the extended hours (the
+// spark has none): null during the session, or when the last trade is not in those hours
+export type ExtendedPrice = { price: number; session: 'pre' | 'post'; time: number; regular: number };
+export async function yahooExtended(id: string): Promise<ExtendedPrice | null> {
+  const json = await yfFetch<any>(`/v8/finance/chart/${encodeURIComponent(id)}?range=1d&interval=1m&includePrePost=true`);
+  const r = json?.chart?.result?.[0];
+  const ts: number[] = r?.timestamp ?? [];
+  const closes: (number | null)[] = r?.indicators?.quote?.[0]?.close ?? [];
+  let k = ts.length - 1;
+  while (k >= 0 && closes[k] == null) k--;
+  const period = r?.meta?.currentTradingPeriod, regular = r?.meta?.regularMarketPrice;
+  if (k < 0 || typeof regular !== 'number') return null;
+  const t = ts[k];
+  const within = (p?: { start: number; end: number }) => !!p && t >= p.start && t < p.end;
+  const session = within(period?.pre) ? 'pre' : within(period?.post) ? 'post' : null;
+  return session ? { price: closes[k]!, session, time: t, regular } : null;
 }
 
 // ---- quotes for the watchlist: one request for many symbols

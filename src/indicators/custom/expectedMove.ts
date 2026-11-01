@@ -21,6 +21,9 @@ import { LOCALE } from '../../i18n/lang';
 // The calibration runs on 30-minute (or 15-minute) bars of the chart's own symbol, completed
 // with hourly ones further back (see mergedSessions), whatever the chart's timeframe; an implied
 // index is read at its daily open (≈ its quote at the cash open) and its daily close.
+// On an index CFD the reference is its future (the CME's E-minis, Eurex's DAX, Euronext's CAC): the
+// whole calibration runs on the future's bars, and every level is carried onto the CFD's price by the
+// gap between the two at that session's open (at its close for the next day's projection).
 
 const VOL: Record<string, string> = { spx: 'VIX1D', ndx: 'VXN', dji: 'VXD', rut: 'RVX' };
 const EU = new Set(['dax', 'cac']);
@@ -199,15 +202,19 @@ export const EXPECTED_MOVE: IndicatorDef = {
       return sym ? companion(sym, tf, from) : null;
     };
     const fineTf = stringInput(cfg, EXPECTED_MOVE, 'calibTf') === '15' ? '15m' : '30m';
-    const H = load(st.sym.ticker, fineTf), H60 = load(st.sym.ticker, '1h');
+    // a CFD: calibrated on its future, its own bars only measure the gap with it
+    const onCfd = fam.role === 'cfd';
+    const refTicker = onCfd ? f.future : st.sym.ticker;
+    const H = load(refTicker, fineTf), H60 = load(refTicker, '1h');
+    const C30 = onCfd ? companion(st.sym, fineTf) : null;
     const IV = useIdx ? load(ivTicker, '1D') : null;
     // VIX also gives the regime line of the table
     const V1 = needScale ? load('VIX1D', '1D') : null, VX = load('VIX', '1D');
-    const waiting = [H, H60, IV, V1, VX].filter((c) => c && c.state === 'loading');
+    const waiting = [H, H60, IV, V1, VX, C30].filter((c) => c && c.state === 'loading');
     if (!H || !H60 || waiting.length || H.state === 'error' || H60.state === 'error') {
       const err = [H, H60].find((c) => c?.state === 'error');
       labels.push({ time: k[k.length - 1].time, price: k[k.length - 1].close, color: '#787b86', style: 'down', size: 10,
-        text: err ? `EM : données manquantes (${err.error ?? st.sym.ticker})` : `EM : chargement de la volatilité et de l’historique intraday…` });
+        text: err ? `EM : données manquantes (${err.error ?? refTicker})` : `EM : chargement de la volatilité et de l’historique intraday${onCfd ? ` du future ${refTicker}` : ''}…` });
       return out();
     }
     // a missing or unknown index: no implied volatility (Auto falls back on the realized one)
@@ -240,6 +247,34 @@ export const EXPECTED_MOVE: IndicatorDef = {
     const frozen = new Map<string, Frozen>();
     const projections = new Map<string, Proj>();
     const days = mergedSessions(f, H.candles, H60.candles);
+    // ---- the gap future − CFD: at each session's open and close, on the CFD's own bars ----
+    const cfdBars = C30?.state === 'ready' ? C30.candles : [];
+    const cfdBar = (t: number) => {
+      let lo = 0, hi = cfdBars.length - 1;
+      while (lo <= hi) { const m = (lo + hi) >> 1; if (cfdBars[m].time === t) return cfdBars[m]; if (cfdBars[m].time < t) lo = m + 1; else hi = m - 1; }
+      return null;
+    };
+    const gapAtOpen = new Map<string, number>(), gapAtClose = new Map<string, number>();
+    if (onCfd) {
+      for (const d of days) {
+        const o = cfdBar(d.firstT), c = cfdBar(d.lastT);
+        if (o) gapAtOpen.set(d.day, d.o - o.open);
+        if (c) gapAtClose.set(d.day, d.c - c.close);
+      }
+    }
+    // the gap now (the last bars of both), for the days the CFD's bars don't reach
+    const gapNow = onCfd && k.length && H.candles.length ? H.candles[H.candles.length - 1].close - k[k.length - 1].close : 0;
+    const knownDays = [...gapAtOpen.keys()].sort();
+    const gapOpen = (day: string) => {
+      if (!onCfd) return 0;
+      const g = gapAtOpen.get(day);
+      if (g != null) return g;
+      // the nearest session measured before (else the gap now)
+      let lo = 0, hi = knownDays.length - 1, best = -1;
+      while (lo <= hi) { const m = (lo + hi) >> 1; if (knownDays[m] < day) { best = m; lo = m + 1; } else hi = m - 1; }
+      return best >= 0 ? gapAtOpen.get(knownDays[best])! : gapNow;
+    };
+    const gapClose = (day: string) => (onCfd ? gapAtClose.get(day) ?? gapOpen(day) : 0);
     const nowS = Math.floor(Date.now() / 1000);
     // when the history holds fewer sessions than asked (Yahoo's 59 days of 30-minute bars on
     // a future), the full sample is all of it but the first ten
@@ -366,9 +401,12 @@ export const EXPECTED_MOVE: IndicatorDef = {
       const fz = frozen.get(s.day);
       if (!fz) continue;
       const L = levels(fz);
+      // on a CFD, the future's levels minus that morning's gap
+      const g = gapOpen(s.day);
+      for (const key of ['rawUp', 'rawDn', 'calUp', 'calDn', 'envUp', 'envDn'] as const) L[key] -= g;
       const seg = { left: s.first, leftBars: -0.4, right: s.last, rightBars: Math.max(0, Math.round((s.end - s.last) / step)) + 0.4 };
       if (on('showEnv') && on('showCal')) { zone(seg, L.calUp, L.envUp, fillUp, fillTransp); zone(seg, L.calDn, L.envDn, fillDown, fillTransp); }
-      if (on('showOpen')) hline(seg, fz.o, withTransparency(yellow, 30), 1);
+      if (on('showOpen')) hline(seg, fz.o - g, withTransparency(yellow, 30), 1);
       if (on('showRaw')) { hline(seg, L.rawUp, withTransparency('#787b86', 20), 1); hline(seg, L.rawDn, withTransparency('#787b86', 20), 1); }
       if (on('showEnv')) { hline(seg, L.envUp, withTransparency(up, 40), 1); hline(seg, L.envDn, withTransparency(down, 40), 1); }
       if (on('showCal')) { hline(seg, L.calUp, up, 2); hline(seg, L.calDn, down, 2); }
@@ -398,9 +436,12 @@ export const EXPECTED_MOVE: IndicatorDef = {
           ? { left: last.time, leftBars: 0.6, right: last.time, rightBars: futureBars }
           : { left: k[first].time, leftBars: -0.4, right: k[lastI].time, rightBars: futureBars };
         const P = projLevels(p);
+        const g = gapClose(d.day);
+        for (const key of ['calUp', 'calDn', 'envUp', 'envDn', 'gapHi', 'gapLo'] as const) P[key] -= g;
+        const anc = p.anc - g;
         zone(seg, P.calUp, P.envUp, fillUp, projTransp); zone(seg, P.calDn, P.envDn, fillDown, projTransp);
         if (on('showGap')) zone(seg, P.gapHi, P.gapLo, gapColor, gapTransp);
-        hline(seg, p.anc, withTransparency(yellow, light ? 30 : 50), 1, 'dotted');
+        hline(seg, anc, withTransparency(yellow, light ? 30 : 50), 1, 'dotted');
         hline(seg, P.calUp, withTransparency(up, 30), 1, 'dashed');
         hline(seg, P.calDn, withTransparency(down, 30), 1, 'dashed');
         hline(seg, P.envUp, withTransparency(up, 60), 1, 'dotted');
@@ -412,7 +453,7 @@ export const EXPECTED_MOVE: IndicatorDef = {
           };
           tag(P.envUp, withTransparency(up, 20), 'J+1 enveloppe +');
           tag(P.calUp, up, 'J+1 dist. moy. +');
-          tag(p.anc, withTransparency(yellow, light ? 10 : 30), 'J+1 ancrage');
+          tag(anc, withTransparency(yellow, light ? 10 : 30), 'J+1 ancrage');
           tag(P.calDn, down, 'J+1 dist. moy. −');
           tag(P.envDn, withTransparency(down, 20), 'J+1 enveloppe −');
         }
@@ -489,6 +530,10 @@ export const EXPECTED_MOVE: IndicatorDef = {
       return out();
     }
     const L = levels(c);
+    // the trade check and the table's place on a CFD: its own prices
+    const gLast = gapOpen(lastDayKey!);
+    const Lc = { ...L };
+    for (const key of ['rawUp', 'rawDn', 'calUp', 'calDn', 'envUp', 'envDn'] as const) Lc[key] -= gLast;
     const lastSess = days[days.length - 1];
     const today = lastSess?.day === lastDayKey && inCashSession(f, nowS);
     const consumed = today && c.em > 0 ? ((lastSess.h - lastSess.l) / c.em) * 100 : NaN;
@@ -504,8 +549,9 @@ export const EXPECTED_MOVE: IndicatorDef = {
 
     const lines = [
       `${st.sym.ticker} · ${mkt} · ${srcTxt} · ${ddmm(lastDayKey!)} ${today ? '(en cours)' : '(terminée)'}`,
+      ...(onCfd ? [`Réf. future ${refTicker} · reporté sur le CFD : écart ${gLast >= 0 ? '+' : ''}${p(gLast)} pts`] : []),
       `Échantillon : ${c.n} / ${lookback} séances`,
-      `Open ${p(c.o)} · vol ${fmt(c.iv)} %`,
+      `Open ${p(c.o)}${onCfd ? ` (future) · ${p(c.o - gLast)} (CFD)` : ''} · vol ${fmt(c.iv)} %`,
       `EM non calibré ± ${p(L.em)} pts`,
       `Ratios moyens haut / bas : ${fmt(c.fu)} / ${fmt(c.fd)}`,
       `Écarts-types : ${fmt(c.su)} / ${fmt(c.sd)}`,
@@ -527,7 +573,7 @@ export const EXPECTED_MOVE: IndicatorDef = {
           `Ancrage ${p(latestProj.anc)} · vol. prévue ${fmt(latestProj.iv)} %`,
           `Coeff. vol. ouverture / clôture ${fmt(latestProj.k)} (médiane, n=${ratA.length})`,
           `EM projeté ± ${p(Math.round(latestProj.em / tick) * tick)} · distances ${p(P.dUp)} / ${p(P.dDn)}`,
-          `Bornes projetées + / − : ${p(P.calUp)} / ${p(P.calDn)}`,
+          `Bornes projetées + / − : ${p(P.calUp - gapClose(latestProj.day))} / ${p(P.calDn - gapClose(latestProj.day))}${onCfd ? ' (CFD)' : ''}`,
           `Gap d’ouverture moyen ${Number.isFinite(latestProj.gm) ? `${fmt(latestProj.gm * latestProj.em, 0)} ± ${fmt(latestProj.gs * latestProj.em, 0)} pts` : '—'}`,
         );
       } else lines.push('Projection J+1 : disponible après la clôture cash');
@@ -539,7 +585,7 @@ export const EXPECTED_MOVE: IndicatorDef = {
     if (tEntry > 0 && tStop > 0 && tEntry !== tStop) {
       const isLong = tEntry > tStop, risk = Math.abs(tEntry - tStop);
       const r1 = isLong ? tEntry + risk : tEntry - risk;
-      const tz = (lvl: number) => (isLong ? (lvl <= L.calUp ? 0 : lvl <= L.envUp ? 1 : 2) : (lvl >= L.calDn ? 0 : lvl >= L.envDn ? 1 : 2));
+      const tz = (lvl: number) => (isLong ? (lvl <= Lc.calUp ? 0 : lvl <= Lc.envUp ? 1 : 2) : (lvl >= Lc.calDn ? 0 : lvl >= Lc.envDn ? 1 : 2));
       const zTxt = ['dans la distance moyenne ✓', 'ambitieux ⚠', 'hors enveloppe ✗'];
       lines.push(`Trade ${isLong ? 'LONG' : 'SHORT'} · stop ${p(risk)} : ${risk < slInd ? 'trop court ✗' : 'OK ✓'}`);
       lines.push(`1R (${p(r1)}) : ${zTxt[tz(r1)]}`);
@@ -552,7 +598,7 @@ export const EXPECTED_MOVE: IndicatorDef = {
     }
     if (robotLines.length) lines.push('— Robot —', ...robotLines);
     if (on('showTable')) {
-      labels.push({ time: last.time + step * 12, price: c.o, text: lines.join('\n'), color: tableInk, style: 'up', size: 10 });
+      labels.push({ time: last.time + step * 12, price: c.o - gLast, text: lines.join('\n'), color: tableInk, style: 'up', size: 10 });
     }
     return out();
   },

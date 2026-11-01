@@ -6,9 +6,12 @@ import { useOptionsReplay } from '../store/optionsReplay';
 import { currentPrice } from './symbolActions';
 import type { Candle } from '../types';
 import { LOCALE } from '../i18n/lang';
+import { useBroker } from '../store/broker';
+import { brokerApi, brokerView } from './brokerAccount';
 
 // The account the chart, the order ticket and the quick buttons trade: the live
-// virtual account, or during a bar replay the replay account (store/replayTrading).
+// virtual account or the broker picked in the "Trader" menu (store/broker), and
+// during a bar replay the replay account (store/replayTrading).
 
 export type TradingApi = {
   replay: boolean;
@@ -40,6 +43,7 @@ export function tradingApi(replay = isReplaying()): TradingApi {
       modifyOrder: (id, patch) => r().modifyOrder(id, patch),
     };
   }
+  if (useBroker.getState().active !== 'paper') return brokerApi();
   const s = () => useStore.getState();
   return {
     replay,
@@ -77,11 +81,20 @@ export function endReplaySession() {
   useStore.getState().setBottomDock({ tab: 'replay' });
 }
 
-// the account shown and traded now, re-rendering when it changes
-export function useTradingAccount(): { api: TradingApi; paper: PaperAccount; replay: boolean } {
+// the account shown and traded now, re-rendering when it changes (`broker`: a broker's account,
+// whose positions and orders are shown in the chart's prices)
+export function useTradingAccount(): { api: TradingApi; paper: PaperAccount; replay: boolean; broker: boolean } {
   const replay = useChartUi((s) => s.replay.mode === 'on');
   const live = useStore((s) => s.paper);
   const rp = useReplayTrading((s) => s.account);
-  const api = useMemo(() => tradingApi(replay), [replay]);
-  return { api, paper: replay ? rp : live, replay };
+  const broker = useBroker((s) => s.active !== 'paper') && !replay;
+  const snap = useBroker((s) => s.snap);
+  const bridges = useBroker((s) => s.bridges);
+  const markets = useBroker((s) => s.markets);
+  const ticker = useStore((s) => s.symbol.ticker);
+  const view = useMemo(() => (broker ? brokerView(ticker) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [broker, ticker, snap, bridges, markets]);
+  const api = useMemo(() => (broker ? brokerApi() : tradingApi(replay)), [replay, broker]);
+  return { api, paper: replay ? rp : view ?? live, replay, broker };
 }

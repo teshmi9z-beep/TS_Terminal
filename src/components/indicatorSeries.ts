@@ -4,7 +4,7 @@ import {
 } from 'lightweight-charts';
 import { getIndicatorDef, type Plot, type PlotPoint } from '../indicators/registry';
 import { isSeriesPlot, isShapePlot, type PlotCandle } from '../indicators/types';
-import { styledPlots, plotShown } from '../indicators/style';
+import { styledPlots, plotShown, chartLineStyle } from '../indicators/style';
 import { withChartSeries } from '../indicators/companion';
 import { paneHostId, sourceCandles, sourceOrder } from '../indicators/derived';
 import { IndicatorShapes } from './indicatorShapes';
@@ -94,7 +94,7 @@ export class MiniIndicators {
       const series = seriesPlots.map((p, idx) => {
         const common = {
           priceLineVisible: false,
-          lastValueVisible: true,
+          lastValueVisible: cfg.axisLabels !== false,
           visible: cfg.visible && onTf && plotShown(cfg, p.key),
           priceFormat: def.volumeFormat
             ? { type: 'volume' as const }
@@ -106,7 +106,7 @@ export class MiniIndicators {
           : p.kind === 'candles'
             ? this.chart.addSeries(CandlestickSeries, { upColor: p.color, downColor: p.color, ...common }, pane)
             : this.chart.addSeries(LineSeries, {
-              color: p.color, lineWidth: (p.width ?? 2) as LineWidth, crosshairMarkerRadius: 3,
+              color: p.color, lineWidth: (p.width ?? 2) as LineWidth, lineStyle: chartLineStyle(p.lineStyle), crosshairMarkerRadius: 3,
               lineType: p.step ? LineType.WithSteps : LineType.Simple, ...common,
             }, pane);
         s.setData(seriesData(p));
@@ -155,6 +155,13 @@ export class MiniIndicators {
         const rt = rtOf(i);
         return i === 0 || !rt ? 1 : rt.cfg.paneStretch ?? getIndicatorDef(rt.cfg)?.stretch ?? 0.3;
       });
+      // a small chart (2 / 4 / 6 windows): its indicators take 35 % of the height at most, the
+      // prices keep the rest (the main chart's pane sizes would leave them a thin strip)
+      const ind = factors.reduce((s, f, i) => (i === 0 || collapsed[i] ? s : s + f), 0);
+      if (total < 360 && ind / (1 + ind) > 0.35) {
+        const k = 0.35 / 0.65 / ind;
+        factors.forEach((f, i) => { if (i > 0) factors[i] = f * k; });
+      }
       const sumNormal = factors.reduce((s, f, i) => (collapsed[i] ? s : s + f), 0) || 1;
       panes.forEach((p, i) => p.setStretchFactor(collapsed[i] ? (COLLAPSED_PANE_PX * sumNormal) / avail : factors[i]));
     }

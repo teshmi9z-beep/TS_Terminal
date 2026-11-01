@@ -9,6 +9,8 @@ import PineEditor from './PineEditor';
 import TradingPanel from './TradingPanel';
 import YieldCurves from './YieldCurves';
 import MacroMap from './MacroMap';
+import BrokerMarkets from './BrokerMarkets';
+import { useBroker } from '../store/broker';
 
 const ic = { width: 22, height: 22, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const };
 
@@ -20,11 +22,13 @@ const PANELS: { id: RightPanelId; label: string; icon: ReactElement }[] = [
   { id: 'screener', label: 'Screener', icon: <svg {...ic}><path d="M4 5h16l-6 7.5V19l-4-2v-4.5z" /></svg> },
   { id: 'pine', label: 'Éditeur Pine', icon: <svg {...ic}><path d="M3 19l6-9 4 5 3-4 5 8z" /><path d="M9 10l1.5-2.5" /></svg> },
   { id: 'yields', label: 'Courbes de rendement', icon: <svg {...ic}><path d="M4 4v16h16" /><path d="M7 16.5c1.5-4.5 4-7.5 12-9" /><circle cx="7" cy="16.5" r="1" /><circle cx="12" cy="10.5" r="1" /><circle cx="19" cy="7.5" r="1" /></svg> },
+  // the broker's markets, only while a broker is picked in the "Trader" menu
+  { id: 'broker', label: 'Marchés IG', icon: <svg {...ic}><path d="M4 18l4.5-5 3.5 3 6-7" /><path d="M14 9h4v4" /><rect x="3" y="3" width="18" height="18" rx="3" /></svg> },
   { id: 'macro', label: 'Macro Maps', icon: <svg {...ic}><circle cx="12" cy="12" r="8.5" /><path d="M3.5 12h17M12 3.5c2.5 2.5 3.5 5.3 3.5 8.5s-1 6-3.5 8.5c-2.5-2.5-3.5-5.3-3.5-8.5s1-6 3.5-8.5z" /></svg> },
 ];
 
 // wider panels need room for their columns / code
-const MIN_WIDTH: Partial<Record<RightPanelId, number>> = { screener: 460, pine: 480, trading: 330, data: 260, yields: 400, macro: 380 };
+const MIN_WIDTH: Partial<Record<RightPanelId, number>> = { screener: 460, pine: 480, trading: 330, data: 260, yields: 400, macro: 380, broker: 330 };
 
 // TradingView's right "widget bar": a thin icon strip that opens one panel at a time
 export default function RightSidebar() {
@@ -38,10 +42,14 @@ export default function RightSidebar() {
   const watchlistSide = useStore((s) => s.watchlistSide);
   const leftOpen = useStore((s) => s.leftWatchlistOpen);
   const setLeftOpen = useStore((s) => s.setLeftWatchlistOpen);
+  const brokerOn = useBroker((s) => s.active !== 'paper');
   const fullscreen = useChartUi((s) => s.rightFullscreen);
   const setFullscreen = useChartUi((s) => s.setRightFullscreen);
-  // the watchlist docked on the left is not shown here
-  const shown = panel === 'watchlist' && watchlistSide === 'left' ? null : panel;
+  // the Pine editor detached in its own window: its button shows / hides that window
+  const pineFloat = useStore((s) => s.pineFloat) != null;
+  const pineOpen = useChartUi((s) => s.pineEditor.open);
+  // the watchlist docked on the left (and the detached Pine editor) is not shown here
+  const shown = (panel === 'watchlist' && watchlistSide === 'left') || (panel === 'pine' && pineFloat) ? null : panel;
   const isFull = fullscreen && shown != null;
   // the order ticket shows next to the panel that was open when it opened (the ticket alone when none was)
   const beside = shown === 'trading' && !isFull && besidePanel && besidePanel !== 'trading' && !(besidePanel === 'watchlist' && watchlistSide === 'left') ? besidePanel : null;
@@ -86,18 +94,22 @@ export default function RightSidebar() {
           {main === 'trading' && <TradingPanel />}
           {main === 'yields' && <YieldCurves />}
           {main === 'macro' && <MacroMap />}
+          {main === 'broker' && <BrokerMarkets />}
         </div>
       )}
       <div className="right-strip">
-        {PANELS.map((p) => {
+        {PANELS.filter((p) => p.id !== 'broker' || brokerOn).map((p) => {
           const leftWl = p.id === 'watchlist' && watchlistSide === 'left';
-          const active = leftWl ? leftOpen : panel === p.id || (panel === 'trading' && beside === p.id);
+          const floatPine = p.id === 'pine' && pineFloat;
+          const active = leftWl ? leftOpen : floatPine ? pineOpen : panel === p.id || (panel === 'trading' && beside === p.id);
           return (
             <button
               key={p.id} className={`rs-btn ${active ? 'active' : ''}`}
-              data-tip={leftWl ? `${p.label} (à gauche)` : p.label} aria-label={p.label}
+              data-tip={leftWl ? `${p.label} (à gauche)` : floatPine ? `${p.label} (fenêtre détachée)` : p.label} aria-label={p.label}
               // with the order ticket open, a panel opens (or closes) next to it
-              onClick={() => (leftWl ? setLeftOpen(!leftOpen) : panel === 'trading' && !isFull ? setBeside(beside === p.id ? null : p.id) : setPanel(panel === p.id ? null : p.id))}
+              onClick={() => (leftWl ? setLeftOpen(!leftOpen)
+                : floatPine ? useChartUi.setState((s) => ({ pineEditor: { ...s.pineEditor, open: !pineOpen } }))
+                : panel === 'trading' && !isFull ? setBeside(beside === p.id ? null : p.id) : setPanel(panel === p.id ? null : p.id))}
             >
               {p.icon}
               {p.id === 'alerts' && alertsCount > 0 && <span className="rs-badge">{alertsCount}</span>}

@@ -3,6 +3,8 @@ import { useChartUi } from '../store/chartUi';
 import { useQuotes } from '../data/feeds/quotes';
 import { currentPrice } from './symbolActions';
 import { tradingApi } from './tradingAccount';
+import { useBroker } from '../store/broker';
+import { brokerApi } from './brokerAccount';
 
 // last price of a ticker: live quote, else the chart's last bar for the charted symbol
 export function lastPriceOf(ticker: string): number | null {
@@ -12,7 +14,8 @@ export function lastPriceOf(ticker: string): number | null {
 }
 
 // market order at the current price (used by the panel and the chart's buy / sell buttons);
-// during a replay, on the replay account at the close of the replay bar
+// during a replay, on the replay account at the close of the replay bar; with a broker picked in
+// the "Trader" menu, sent to it
 export function marketOrder(side: PaperSide, qty: number, sl?: number, tp?: number) {
   const st = useStore.getState();
   const ui = useChartUi.getState();
@@ -28,6 +31,7 @@ export function marketOrder(side: PaperSide, qty: number, sl?: number, tp?: numb
   const price = lastPriceOf(st.symbol.ticker);
   if (price == null) { ui.showToast('Pas de cours disponible pour ce symbole'); return; }
   if (!(qty > 0)) { ui.showToast('Quantité invalide'); return; }
+  if (useBroker.getState().active !== 'paper') { brokerApi().open({ symbol: st.symbol, side, qty, entry: price, sl, tp }); return; }
   st.paperOpen({ symbol: st.symbol, side, qty, entry: price, sl, tp });
   ui.showToast(`${side === 'long' ? 'Achat' : 'Vente'} ${qty} ${st.symbol.ticker} à ${price}`);
 }

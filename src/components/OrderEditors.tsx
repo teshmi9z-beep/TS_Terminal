@@ -5,7 +5,7 @@ import { LOCALE, DEC } from '../i18n/lang';
 // Small panels opened by a double-click on an order's lines (ChartTrading):
 // the quantity of a pending order, and a stop or target set by its amount.
 
-export type EditorAt = { top?: number; bottom?: number; right: number };
+export type EditorAt = { top?: number; bottom?: number; right?: number; left?: number };
 
 const num = (v: string) => parseFloat(v.replace(/\s/g, '').replace(',', '.'));
 const fmtMoney = (v: number) => v.toLocaleString(LOCALE, { minimumFractionDigits: 2, maximumFractionDigits: 2 });

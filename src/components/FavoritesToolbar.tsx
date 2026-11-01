@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../store/store';
 import { DRAWABLE_TOOLS, TOOL_INFO, toneClass } from './toolInfo';
 import { PresetIcon } from './DrawingPresetsPanel';
@@ -16,12 +16,32 @@ export default function FavoritesToolbar() {
   const selectPreset = useStore((s) => s.selectPreset);
   const toggleFavoriteTool = useStore((s) => s.toggleFavoriteTool);
   const [editing, setEditing] = useState(false);
+  // the window's size: a bar left at the right of a full screen stays in sight when the window narrows
+  // (shown inside it; its saved place comes back when the window grows again)
+  const ref = useRef<HTMLDivElement>(null);
+  const [view, setView] = useState({ w: window.innerWidth, h: window.innerHeight });
+  const [size, setSize] = useState({ w: 120, h: 40 });
+  useEffect(() => {
+    const onResize = () => setView({ w: window.innerWidth, h: window.innerHeight });
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  // the bar's own size (it grows with its tools)
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setSize({ w: el.offsetWidth, h: el.offsetHeight }));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [bar.visible]);
 
   if (!bar.visible) return null;
+  const left = Math.max(0, Math.min(bar.x, view.w - size.w - 4));
+  const top = Math.max(0, Math.min(bar.y, view.h - size.h - 4));
 
   function onGripDown(e: React.MouseEvent) {
     e.preventDefault();
-    const start = { x: e.clientX, y: e.clientY, bx: bar.x, by: bar.y };
+    const start = { x: e.clientX, y: e.clientY, bx: left, by: top };
     const onMove = (ev: MouseEvent) => setFavoritesBar({
       x: Math.max(0, Math.min(window.innerWidth - 60, start.bx + ev.clientX - start.x)),
       y: Math.max(0, Math.min(window.innerHeight - 40, start.by + ev.clientY - start.y)),
@@ -32,7 +52,7 @@ export default function FavoritesToolbar() {
   }
 
   return (
-    <div className="fav-bar" style={{ left: bar.x, top: bar.y }}>
+    <div ref={ref} className="fav-bar" style={{ left, top }}>
       <span className="fav-grip" onMouseDown={onGripDown} title="Déplacer">⋮⋮</span>
       {favorites.length === 0 && <span className="fav-empty">Clic droit sur un outil › Ajouter aux favoris</span>}
       {favorites.map((key) => {

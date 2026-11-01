@@ -1,6 +1,7 @@
-import { Fragment, useEffect, useRef, useState, type RefObject } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { LineStyle, type IPriceLine, type Logical } from 'lightweight-charts';
-import { useStore, type PaperOrder, type PaperPosition, type PaperSide } from '../store/store';
+import { useStore, type BrokerLeg, type PaperOrder, type PaperPosition, type PaperSide } from '../store/store';
+import { brokerLabel, isLive, useBroker } from '../store/broker';
 import { useChartUi } from '../store/chartUi';
 import { useQuotes } from '../data/feeds/quotes';
 import { formatPrice, indexAtOrBefore, type ChartEngine } from './chartUtils';
@@ -78,7 +79,13 @@ export default function ChartTrading({ engine, seriesGen }: {
 }) {
   const symbol = useStore((s) => s.symbol);
   // during a replay: the replay account, priced at the replay bar
-  const { api: acct, paper } = useTradingAccount();
+  const { api: acct, paper, broker } = useTradingAccount();
+  // with a broker: its account's worth, and the charted market's (for the order being drawn)
+  const brokerAmounts = useBroker((s) => s.snap?.account);
+  const igEpic = useBroker((s) => s.markets[symbol.ticker]?.epic);
+  const igInfo = useBroker((s) => (igEpic ? s.igMarkets[igEpic] : undefined));
+  const igGap = useBroker((s) => s.bridges[symbol.ticker]?.offset);
+  const brokerId = useBroker((s) => s.active);
   const placing = useChartUi((s) => s.orderPlacing);
   const setPlacing = useChartUi((s) => s.setOrderPlacing);
   const paperQty = useChartUi((s) => s.paperQty);
@@ -91,6 +98,12 @@ export default function ChartTrading({ engine, seriesGen }: {
   const ticket = useChartUi((s) => s.orderTicket);
   const panelOpen = useStore((s) => s.rightPanel === 'trading');
   const activeTool = useStore((s) => s.activeTool);
+  // labels at the right next to the axis, or stacked at the left like ProRealTime (Paramètres de trading)
+  const leftMode = useStore((s) => s.tradeLabels) === 'left';
+  // their prices on the axis, or not (Paramètres de trading)
+  const axisPrices = useStore((s) => s.tradeAxisPrices);
+  // the labels' widths, measured once drawn: where their links to the trade's bar start
+  const pillW = useRef(new Map<string, number>());
   const [qty, setQty] = useState(String(paperQty));
   const [live, setLive] = useState<Live | null>(null);
   // price and x under the mouse while the order ticket waits for a click on the chart
@@ -230,6 +243,19 @@ export default function ChartTrading({ engine, seriesGen }: {
     return () => cancelAnimationFrame(raf);
   }, [engine]);
 
+  // left layout: a label's width changing (its amount, a hover) moves the start of its link; after
+  // every render, and a new render only when a width changed (so it settles at once)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useLayoutEffect(() => {
+    if (!leftMode) return;
+    let changed = false;
+    rootRef.current?.querySelectorAll<HTMLElement>('.ct-pill[data-key]').forEach((el) => {
+      const k = el.dataset.key!, w = el.offsetWidth;
+      if (Math.abs((pillW.current.get(k) ?? 0) - w) > 1) { pillW.current.set(k, w); changed = true; }
+    });
+    if (changed) setFrame((n) => n + 1);
+  });
+
   const at = (key: string, price: number | undefined) => (live && live.key === key ? live.price : price);
 
   // ---------- the lines (drawn by the chart, with their price on the axis; the labels are ours) ----------
@@ -240,19 +266,19 @@ export default function ChartTrading({ engine, seriesGen }: {
   for (const side of foldedSides) {
     const list = sideList(side);
     push(`grp:${side}:entry`, avgEntry(list), sideColor(side), LineStyle.Solid, true);
-    for (const l of levelsOf(side, list, 'sl')) push(`grp:${side}:sl:${l.tag}`, l.price, RED, LineStyle.Dashed);
-    for (const l of levelsOf(side, list, 'tp')) push(`grp:${side}:tp:${l.tag}`, l.price, GREEN, LineStyle.Dashed);
+    for (const l of levelsOf(side, list, 'sl')) push(`grp:${side}:sl:${l.tag}`, l.price, RED, LineStyle.Dashed, leftMode);
+    for (const l of levelsOf(side, list, 'tp')) push(`grp:${side}:tp:${l.tag}`, l.price, GREEN, LineStyle.Dashed, leftMode);
   }
   for (const p of singles) {
     push(`pos:${p.id}:entry`, p.entry, sideColor(p.side), LineStyle.Solid, true);
-    push(`pos:${p.id}:sl`, at(`pos:${p.id}:sl`, p.sl), RED, LineStyle.Dashed);
-    push(`pos:${p.id}:tp`, at(`pos:${p.id}:tp`, p.tp), GREEN, LineStyle.Dashed);
+    push(`pos:${p.id}:sl`, at(`pos:${p.id}:sl`, p.sl), RED, LineStyle.Dashed, leftMode);
+    push(`pos:${p.id}:tp`, at(`pos:${p.id}:tp`, p.tp), GREEN, LineStyle.Dashed, leftMode);
   }
   for (const o of orders) {
     const moved = orderMove(o);
-    push(`ord:${o.id}:price`, moved.price, sideColor(o.side), LineStyle.Dotted);
-    push(`ord:${o.id}:sl`, moved.sl, RED, LineStyle.Dotted);
-    push(`ord:${o.id}:tp`, moved.tp, GREEN, LineStyle.Dotted);
+    push(`ord:${o.id}:price`, moved.price, sideColor(o.side), LineStyle.Dotted, leftMode);
+    push(`ord:${o.id}:sl`, moved.sl, RED, LineStyle.Dotted, leftMode);
+    push(`ord:${o.id}:tp`, moved.tp, GREEN, LineStyle.Dotted, leftMode);
   }
   const d = draft ? draftMove(draft) : null;
   if (d) {
@@ -266,9 +292,12 @@ export default function ChartTrading({ engine, seriesGen }: {
     const s = engine.current.mainSeries;
     if (!s) return;
     for (const l of linesRef.current) { try { s.removePriceLine(l); } catch { /* series replaced */ } }
-    linesRef.current = lines.map((l) => s.createPriceLine({ price: l.price, color: l.color, lineWidth: 1, lineStyle: l.style, lineVisible: !l.axisOnly, axisLabelVisible: true, title: l.title }));
+    linesRef.current = lines.map((l) => s.createPriceLine({
+      price: l.price, color: l.color, lineWidth: 1, lineStyle: l.style, lineVisible: !l.axisOnly,
+      axisLabelVisible: axisPrices || l.key.startsWith('draft:'), title: l.title,
+    }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [linesKey, seriesGen]);
+  }, [linesKey, seriesGen, axisPrices]);
   useEffect(() => () => {
     const s = engine.current.mainSeries;
     for (const l of linesRef.current) { try { s?.removePriceLine(l); } catch { /* chart gone */ } }
@@ -358,13 +387,54 @@ export default function ChartTrading({ engine, seriesGen }: {
     else list.forEach((p, i) => { hLine(`seg:${p.id}`, steps[i].x, plotW, p.entry, color, 'one'); lineFrom.set(`pos:${p.id}:entry`, steps[i].x); });
   }
 
+  // Left layout (ProRealTime): a stop, target or pending order's line starts at its trade's bar (a
+  // position's entry bar, an order's creation bar), a dotted vertical joins it to the entry there, and
+  // dots mark the entries and the levels; the labels at the left are linked to those dots.
+  const anchorOf = (key: string): number | null => {
+    const [kind, id] = key.split(':');
+    if (kind === 'pos') return lineFrom.get(`pos:${id}:entry`) ?? null;
+    if (kind === 'grp') return lineFrom.get(`grp:${id}:entry`) ?? null;
+    if (kind === 'ord') { const o = orders.find((x) => x.id === id); return o ? barX(o.createdAt) : null; }
+    return null;
+  };
+  const dots: { key: string; x: number; y: number; color: string }[] = [];
+  if (leftMode) {
+    const entryOf = (key: string) => {
+      const [kind, id] = key.split(':');
+      if (kind === 'pos') return positions.find((p) => p.id === id)?.entry;
+      if (kind === 'grp') return avgEntry(sideList(id as PaperSide));
+      return lines.find((l) => l.key === `ord:${id}:price`)?.price;
+    };
+    for (const l of lines) {
+      if (l.key.startsWith('draft:')) continue;
+      const x = anchorOf(l.key);
+      const y = rawY(l.price);
+      if (x == null || y == null || y < 0 || y > paneH) continue;
+      dots.push({ key: `dot:${l.key}`, x, y, color: l.color });
+      if (/:(entry|price)$/.test(l.key) && !l.key.startsWith('ord:')) continue;
+      // the level's own line, from the bar to the axis
+      segs.push({ key: `lvl:${l.key}`, x, y, w: plotW - x, color: l.color, cls: `level ${l.style === LineStyle.Dotted ? 'dot' : 'dash'}` });
+      lineFrom.set(l.key, x);
+      if (/:price$/.test(l.key)) continue;
+      const e0 = entryOf(l.key), ye = e0 != null ? rawY(e0) : null;
+      if (ye == null) continue;
+      const top = Math.max(0, Math.min(y, ye)), bottom = Math.min(paneH, Math.max(y, ye));
+      if (bottom > top) segs.push({ key: `vd:${l.key}`, x, y: top, h: bottom - top, color: l.color, cls: 'vdash' });
+    }
+    // every position's entry, on its own bar
+    for (const p of positions) {
+      const x = barX(p.openedAt), y = rawY(p.entry);
+      if (y != null && y >= 0 && y <= paneH) dots.push({ key: `dot:in:${p.id}`, x, y, color: sideColor(p.side) });
+    }
+  }
+
   const priceAt = (clientY: number, el: HTMLElement) => {
     const top = el.closest('.chart-container')!.getBoundingClientRect().top;
     const p = series.coordinateToPrice(clientY - top);
     return p == null ? null : round(p);
   };
-  // (replay: the balance, in euros)
-  const equity = replayOn ? paper.balance : paper.balance + paper.positions.reduce((sum, p) => {
+  // (replay: the balance, in euros; a broker: its own figure)
+  const equity = replayOn ? paper.balance : broker && brokerAmounts ? brokerAmounts.balance + brokerAmounts.pnl : paper.balance + paper.positions.reduce((sum, p) => {
     const q = quotes[p.symbol.ticker]?.last;
     return q == null ? sum : sum + (q - p.entry) * p.qty * sign(p.side);
   }, 0);
@@ -478,7 +548,8 @@ export default function ChartTrading({ engine, seriesGen }: {
     const type = orderType(d.side, d.entry, last);
     acct.placeOrder({ symbol, side: d.side, qty: q, type, price: d.entry, sl: d.sl, tp: d.tp });
     ui.setPaperQty(q);
-    ui.showToast(`${replayOn ? 'Replay : ' : ''}${typeLabel(d.side, type)} placé : ${q} ${symbol.ticker} à ${formatPrice(d.entry, prec)}`);
+    // a broker says itself how the order went
+    if (!broker) ui.showToast(`${replayOn ? 'Replay : ' : ''}${typeLabel(d.side, type)} placé : ${q} ${symbol.ticker} à ${formatPrice(d.entry, prec)}`);
     setDraft(null);
     if (replayOn) useStore.getState().setBottomDock({ tab: 'replay' });
   }
@@ -506,6 +577,19 @@ export default function ChartTrading({ engine, seriesGen }: {
     laneYs[lane].push(l.y);
     laneOf.set(l.key, lane);
   }
+  const labelY = new Map<string, number>();
+  if (leftMode) {
+    const items = placed.filter((l) => !l.key.startsWith('draft:')).sort((a, b) => a.y - b.y);
+    const ys = items.map((l) => l.y);
+    for (let i = 1; i < ys.length; i++) ys[i] = Math.max(ys[i], ys[i - 1] + 24);
+    // pushed back up when the last ones fall off the bottom
+    if (ys.length && ys[ys.length - 1] > paneH - 12) {
+      ys[ys.length - 1] = paneH - 12;
+      for (let i = ys.length - 2; i >= 0; i--) ys[i] = Math.min(ys[i], ys[i + 1] - 24);
+    }
+    items.forEach((l, i) => labelY.set(l.key, ys[i]));
+  }
+  const leftOf = (key: string) => leftMode && labelY.has(key);
   const hoverOn = (key: string) => { clearTimeout(hoverTimer.current); setHoverKey(key); };
   const hoverOff = () => { clearTimeout(hoverTimer.current); hoverTimer.current = window.setTimeout(() => setHoverKey(null), 300); };
   // `dbl`: what a double-click on the line or its label opens
@@ -524,8 +608,11 @@ export default function ChartTrading({ engine, seriesGen }: {
           />
         )}
         <div
-          className={`ct-pill chart-ui ${grab ? 'grab' : ''} ${hoverKey === key ? 'hover' : ''}`}
-          style={{ top: y, right: 8 + (laneOf.get(key) ?? 0) * 190, borderColor: color, '--c': color } as React.CSSProperties}
+          className={`ct-pill chart-ui ${grab ? 'grab' : ''} ${hoverKey === key ? 'hover' : ''} ${leftOf(key) ? 'left' : ''}`} data-key={key}
+          style={{
+            top: leftOf(key) ? labelY.get(key) : y, left: leftOf(key) ? 8 : undefined, right: leftOf(key) ? undefined : 8 + (laneOf.get(key) ?? 0) * 190,
+            borderColor: color, '--c': color,
+          } as React.CSSProperties}
           title={dbl ? 'Double-clic pour modifier' : undefined}
           onMouseEnter={() => hoverOn(key)} onMouseLeave={hoverOff}
           onMouseDown={grab ? (ev) => startDrag(grab, ev) : undefined} onDoubleClick={onDbl}
@@ -587,9 +674,37 @@ export default function ChartTrading({ engine, seriesGen }: {
     () => toggleFold(side), 'fold');
   const px = (v: number) => formatPrice(v, prec);
   const draftQty = parseFloat(qty.replace(',', '.')) || 0;
+  // a broker's position / order: its labels in the broker's own prices and money (what its platform shows)
+  const draftLeg: BrokerLeg | undefined = broker && igInfo && !igInfo.partial && igGap != null
+    ? { offset: igGap, perPoint: igInfo.contractSize, currency: igInfo.currency } : undefined;
+  const pxL = (x: { broker?: BrokerLeg } | undefined, v: number) => px(v + (x?.broker?.offset ?? 0));
+  const cashIn = (v: number, currency: string) => {
+    if (currency === 'EUR') return `${money(v)} €`;
+    const rate = eurPerUnit(currency, quotes);
+    return rate != null ? `${money(v * rate)} €` : `${money(v)} ${currencySign(currency)}`;
+  };
+  const legNum = (leg: BrokerLeg, side: PaperSide, entry: number, price: number, q: number) => (price - entry) * sign(side) * q * leg.perPoint;
+  // `live`: at the current price, where the broker's own figure (its spread included) is shown
+  const pnlLeg = (x: { broker?: BrokerLeg }, side: PaperSide, entry: number, price: number, q: number, live = false) => {
+    const leg = x.broker;
+    if (!leg) return pnlOut(side, entry, price, q);
+    const v = live && leg.pnl != null ? leg.pnl : legNum(leg, side, entry, price, q);
+    return <b className={v >= 0 ? 'up' : 'down'}>{cashIn(v, leg.currency)}</b>;
+  };
+  const pnlSumB = (list: PaperPosition[], price: number, live = false) => {
+    const leg = list[0]?.broker;
+    if (!leg) return pnlSum(list, price);
+    const v = list.reduce((sum, p) => sum + (live && p.broker?.pnl != null ? p.broker.pnl : legNum(p.broker ?? leg, p.side, p.entry, price, p.qty)), 0);
+    return <b className={v >= 0 ? 'up' : 'down'}>{cashIn(v, leg.currency)}</b>;
+  };
+  const draftHolder = { broker: draftLeg };
+  // the order being drawn: its risk and gain in the broker's money, a quantity in contracts
+  const draftCash = (v: number) => (draftLeg ? cashIn(v * draftLeg.perPoint, draftLeg.currency) : cash(v));
+  const riskQty = (pct: number, entry: number, sl: number) => qtyForRisk(draftLeg ? equity / draftLeg.perPoint : equity, pct, entry, sl);
 
   return (
     <div ref={rootRef} className={`chart-trading ${replayOn ? 'replay' : ''}`} style={{ width: plotW, height: paneH }}>
+      {broker && isLive(brokerId) && <div className="ct-real" title="Les ordres de ce graphique partent sur le compte réel IG">ARGENT RÉEL · IG</div>}
       {placing && (
         <div className="ct-capture chart-ui" onMouseDown={startPlacing} />
       )}
@@ -617,9 +732,25 @@ export default function ChartTrading({ engine, seriesGen }: {
       {segs.map((sg) => (
         <div
           key={sg.key} className={`ct-seg ${sg.cls}`}
-          style={sg.h != null ? { left: sg.x, top: sg.y, height: sg.h, background: sg.color } : { left: sg.x, top: sg.y, width: sg.w, background: sg.color }}
+          style={sg.cls === 'vdash' ? { left: sg.x, top: sg.y, height: sg.h, borderLeftColor: sg.color }
+            : sg.cls.startsWith('level') ? { left: sg.x, top: sg.y, width: sg.w, borderTopColor: sg.color }
+              : sg.h != null ? { left: sg.x, top: sg.y, height: sg.h, background: sg.color } : { left: sg.x, top: sg.y, width: sg.w, background: sg.color }}
         />
       ))}
+      {leftMode && (
+        <svg className="ct-links" width={plotW} height={paneH}>
+          {[...labelY].map(([key, ly]) => {
+            const x1 = anchorOf(key), line = lines.find((l) => l.key === key);
+            const y1 = line ? rawY(line.price) : null;
+            if (x1 == null || y1 == null || !line) return null;
+            const x0 = 8 + (pillW.current.get(key) ?? 150);
+            if (x1 <= x0 + 4) return null;
+            const bend = Math.min(60, (x1 - x0) / 2);
+            return <path key={`ln:${key}`} d={`M${x0},${ly} C${x0 + bend},${ly} ${x1 - bend},${y1} ${x1},${y1}`} stroke={line.color} />;
+          })}
+          {dots.map((dt) => <circle key={dt.key} cx={dt.x} cy={dt.y} r={3.5} fill={dt.color} />)}
+        </svg>
+      )}
       {d && zones('draft:zones', d.entry, d.sl, d.tp)}
       {orders.map((o) => { const m = orderMove(o); return zones(`ord:${o.id}:zones`, m.price, m.sl, m.tp); })}
 
@@ -633,12 +764,12 @@ export default function ChartTrading({ engine, seriesGen }: {
         const level = (field: 'sl' | 'tp', l: Level) => {
           const from = l.tag === 'all' ? undefined : Number(l.tag);
           return pill(`grp:${side}:${field}:${l.tag}`, l.price, field === 'sl' ? RED : GREEN,
-            <>{field === 'sl' ? 'Stop' : 'Limite'}{l.list.length < list.length && <> ({qtyText(totalQty(l.list))})</>} {px(l.price)} {pnlSum(l.list, l.price)}</>, grab(field, from),
+            <>{field === 'sl' ? 'Stop' : 'Limite'}{l.list.length < list.length && <> ({qtyText(totalQty(l.list))})</>} {pxL(list[0], l.price)} {pnlSumB(l.list, l.price)}</>, grab(field, from),
             btn('✖', field === 'sl' ? 'Retirer le stop' : 'Retirer l’objectif', () => { for (const p of l.list) st.modify(p.id, { [field]: undefined }); }, 'x'), undefined,
             from == null ? undefined : () => setEditor({ kind: 'level', target: 'grp', id: side, field, from }));
         };
         return [
-          pill(`grp:${side}:entry`, avg, sideColor(side), <>{sideLetter(side)}: {qtyText(totalQty(list))} @ {px(avg)}{last != null && <> {pnlSum(list, last)}</>}</>, undefined,
+          pill(`grp:${side}:entry`, avg, sideColor(side), <>{sideLetter(side)}: {qtyText(totalQty(list))} @ {pxL(list[0], avg)}{last != null && <> {pnlSumB(list, last, true)}</>}</>, undefined,
             btn('✖', `Fermer les ${list.length} positions au marché`, () => { if (last != null) for (const p of list) st.close(p.id, last, 'manuel'); }, 'x'),
             addsFor(side, { stop: grab('sl'), limit: grab('tp') }, { stop: sls.length > 0, limit: tps.length > 0 }, {
               stop: () => { const ref = last ?? avg; setAll({ sl: defaultSl(side, side === 'long' ? Math.min(avg, ref) : Math.max(avg, ref)) }); },
@@ -655,7 +786,7 @@ export default function ChartTrading({ engine, seriesGen }: {
         const stopGrab: Grab = { kind: 'pos', id: p.id, field: 'sl' };
         const limitGrab: Grab = { kind: 'pos', id: p.id, field: 'tp' };
         return [
-          pill(`pos:${p.id}:entry`, p.entry, sideColor(p.side), <>{sideLetter(p.side)}: {p.qty} @ {px(p.entry)}{last != null && <> {pnlOut(p.side, p.entry, last, p.qty)}</>}</>, undefined,
+          pill(`pos:${p.id}:entry`, p.entry, sideColor(p.side), <>{sideLetter(p.side)}: {p.qty} @ {pxL(p, p.entry)}{last != null && <> {pnlLeg(p, p.side, p.entry, last, p.qty, true)}</>}</>, undefined,
             btn('✖', 'Fermer la position au marché', () => { if (last != null) st.close(p.id, last, 'manuel'); }, 'x'),
             addsFor(p.side, { stop: stopGrab, limit: limitGrab }, { stop: p.sl != null, limit: p.tp != null }, {
               stop: () => {
@@ -664,10 +795,10 @@ export default function ChartTrading({ engine, seriesGen }: {
               },
               limit: () => st.modify(p.id, { tp: defaultTp(p.side, p.entry, p.sl) }),
             }), undefined, sideList(p.side).length > 1 ? foldBtn(p.side, false) : undefined),
-          pill(`pos:${p.id}:sl`, sl, RED, <>Stop {sl != null && <>{px(sl)} {pnlOut(p.side, p.entry, sl, p.qty)}</>}</>, stopGrab,
+          pill(`pos:${p.id}:sl`, sl, RED, <>Stop {sl != null && <>{pxL(p, sl)} {pnlLeg(p, p.side, p.entry, sl, p.qty)}</>}</>, stopGrab,
             btn('✖', 'Retirer le stop', () => st.modify(p.id, { sl: undefined }), 'x'), undefined,
             () => setEditor({ kind: 'level', target: 'pos', id: p.id, field: 'sl' })),
-          pill(`pos:${p.id}:tp`, tp, GREEN, <>Limite {tp != null && <>{px(tp)} {pnlOut(p.side, p.entry, tp, p.qty)}</>}</>, limitGrab,
+          pill(`pos:${p.id}:tp`, tp, GREEN, <>Limite {tp != null && <>{pxL(p, tp)} {pnlLeg(p, p.side, p.entry, tp, p.qty)}</>}</>, limitGrab,
             btn('✖', 'Retirer l’objectif', () => st.modify(p.id, { tp: undefined }), 'x'), undefined,
             () => setEditor({ kind: 'level', target: 'pos', id: p.id, field: 'tp' })),
         ];
@@ -678,17 +809,17 @@ export default function ChartTrading({ engine, seriesGen }: {
         const stopGrab: Grab = { kind: 'order', id: o.id, field: 'sl' };
         const limitGrab: Grab = { kind: 'order', id: o.id, field: 'tp' };
         return [
-          pill(`ord:${o.id}:price`, m.price, sideColor(o.side), <>{orderTag(o.side, m.type)} {o.qty} @ {px(m.price)}</>, { kind: 'order', id: o.id, field: 'price' },
+          pill(`ord:${o.id}:price`, m.price, sideColor(o.side), <>{orderTag(o.side, m.type)} {o.qty} @ {pxL(o, m.price)}</>, { kind: 'order', id: o.id, field: 'price' },
             btn('✖', 'Annuler l’ordre', () => st.cancelOrder(o.id), 'x'),
             addsFor(o.side, { stop: stopGrab, limit: limitGrab }, { stop: o.sl != null, limit: o.tp != null }, {
               stop: () => st.modifyOrder(o.id, { sl: defaultSl(o.side, o.price) }),
               limit: () => st.modifyOrder(o.id, { tp: defaultTp(o.side, o.price, o.sl) }),
             }),
             () => setEditor({ kind: 'qty', id: o.id })),
-          pill(`ord:${o.id}:sl`, m.sl, RED, <>Stop {m.sl != null && <>{px(m.sl)} {pnlOut(o.side, m.price, m.sl, o.qty)}</>}</>, stopGrab,
+          pill(`ord:${o.id}:sl`, m.sl, RED, <>Stop {m.sl != null && <>{pxL(o, m.sl)} {pnlLeg(o, o.side, m.price, m.sl, o.qty)}</>}</>, stopGrab,
             btn('✖', 'Retirer le stop', () => st.modifyOrder(o.id, { sl: undefined }), 'x'), undefined,
             () => setEditor({ kind: 'level', target: 'ord', id: o.id, field: 'sl' })),
-          pill(`ord:${o.id}:tp`, m.tp, GREEN, <>Limite {m.tp != null && <>{px(m.tp)} {pnlOut(o.side, m.price, m.tp, o.qty)}</>}</>, limitGrab,
+          pill(`ord:${o.id}:tp`, m.tp, GREEN, <>Limite {m.tp != null && <>{pxL(o, m.tp)} {pnlLeg(o, o.side, m.price, m.tp, o.qty)}</>}</>, limitGrab,
             btn('✖', 'Retirer l’objectif', () => st.modifyOrder(o.id, { tp: undefined }), 'x'), undefined,
             () => setEditor({ kind: 'level', target: 'ord', id: o.id, field: 'tp' })),
         ];
@@ -696,39 +827,43 @@ export default function ChartTrading({ engine, seriesGen }: {
 
       {d && (
         <>
-          {pill('draft:entry', d.entry, sideColor(d.side), <>{orderTag(d.side, orderType(d.side, d.entry, last))} {draftQty} @ {px(d.entry)}</>, { kind: 'draft', field: 'entry' }, undefined,
+          {pill('draft:entry', d.entry, sideColor(d.side), <>{orderTag(d.side, orderType(d.side, d.entry, last))} {draftQty} @ {pxL(draftHolder, d.entry)}</>, { kind: 'draft', field: 'entry' }, undefined,
             addsFor(d.side, { stop: { kind: 'draft', field: 'sl' }, limit: { kind: 'draft', field: 'tp' } }, { stop: true, limit: true }, { stop: () => {}, limit: () => {} }))}
-          {pill('draft:sl', d.sl, RED, <>Stop {px(d.sl)}{draftQty > 0 && <> {pnlOut(d.side, d.entry, d.sl, draftQty)}</>}</>, { kind: 'draft', field: 'sl' },
+          {pill('draft:sl', d.sl, RED, <>Stop {pxL(draftHolder, d.sl)}{draftQty > 0 && <> {pnlLeg(draftHolder, d.side, d.entry, d.sl, draftQty)}</>}</>, { kind: 'draft', field: 'sl' },
             undefined, undefined, () => setEditor({ kind: 'level', target: 'draft', id: 'draft', field: 'sl' }))}
-          {pill('draft:tp', d.tp, GREEN, <>Limite {px(d.tp)} · {(Math.abs(d.tp - d.entry) / Math.abs(d.entry - d.sl)).toFixed(1).replace('.', DEC)} R</>, { kind: 'draft', field: 'tp' },
+          {pill('draft:tp', d.tp, GREEN, <>Limite {pxL(draftHolder, d.tp)} · {(Math.abs(d.tp - d.entry) / Math.abs(d.entry - d.sl)).toFixed(1).replace('.', DEC)} R</>, { kind: 'draft', field: 'tp' },
             undefined, undefined, () => setEditor({ kind: 'level', target: 'draft', id: 'draft', field: 'tp' }))}
           <div className="ct-ticket chart-ui" onMouseDown={(ev) => ev.stopPropagation()}>
             <b className={d.side === 'long' ? 'buy' : 'sell'}>{typeLabel(d.side, orderType(d.side, d.entry, last))}</b>
             <label>Qté <QtyStepper value={qty} onChange={changeQty} /></label>
-            {btn('1 %', 'Quantité qui risque 1 % du compte jusqu’au stop', () => changeQty(String(qtyForRisk(equity, 1, d.entry, d.sl))), 'ghost')}
-            {btn('0,5 %', 'Quantité qui risque 0,5 % du compte jusqu’au stop', () => changeQty(String(qtyForRisk(equity, 0.5, d.entry, d.sl))), 'ghost')}
+            {btn('1 %', 'Quantité qui risque 1 % du compte jusqu’au stop', () => changeQty(String(riskQty(1, d.entry, d.sl))), 'ghost')}
+            {btn('0,5 %', 'Quantité qui risque 0,5 % du compte jusqu’au stop', () => changeQty(String(riskQty(0.5, d.entry, d.sl))), 'ghost')}
             {draftQty > 0 && (
               <span className="ct-risk">
-                risque <b className="down">{cash(-Math.abs(d.entry - d.sl) * draftQty)}</b> ({((Math.abs(d.entry - d.sl) * draftQty / equity) * 100).toFixed(2).replace('.', DEC)} %)
-                · gain <b className="up">{cash(Math.abs(d.tp - d.entry) * draftQty)}</b>
+                risque <b className="down">{draftCash(-Math.abs(d.entry - d.sl) * draftQty)}</b> ({((Math.abs(d.entry - d.sl) * draftQty * (draftLeg?.perPoint ?? 1) / equity) * 100).toFixed(2).replace('.', DEC)} %)
+                · gain <b className="up">{draftCash(Math.abs(d.tp - d.entry) * draftQty)}</b>
               </span>
             )}
-            {btn('Placer l’ordre', 'Envoyer l’ordre au compte virtuel', place, d.side === 'long' ? 'buy' : 'sell')}
+            {btn('Placer l’ordre', broker ? `Envoyer l’ordre à ${brokerLabel(brokerId)}` : 'Envoyer l’ordre au compte virtuel', place, d.side === 'long' ? 'buy' : 'sell')}
             {btn('Annuler', 'Effacer cet ordre (Échap)', () => setDraft(null), 'ghost')}
           </div>
         </>
       )}
 
       {editor && (() => {
-        const rate = eurRate ?? 1;
-        const unit = eurRate != null ? '€' : currencySign(cur);
+        // amounts per contract and per point: a broker's in its money, else the symbol's in euros
+        const leg = broker ? draftLeg ?? positions[0]?.broker ?? orders[0]?.broker : undefined;
+        const legEur = leg && (leg.currency === 'EUR' ? 1 : eurPerUnit(leg.currency, quotes));
+        const rate = leg ? leg.perPoint * (legEur ?? 1) : eurRate ?? 1;
+        const unit = leg ? (legEur != null ? '€' : currencySign(leg.currency)) : eurRate != null ? '€' : currencySign(cur);
         const close = () => setEditor(null);
         // under the line's label, or above it near the bottom of the chart
         const placeAt = (price: number, key: string) => {
-          const y = yOf(price);
-          if (y == null) return null;
-          const right = 8 + (laneOf.get(key) ?? 0) * 190;
-          return y > paneH - 190 ? { bottom: paneH - y + 14, right } : { top: y + 14, right };
+          const y0 = yOf(price);
+          if (y0 == null) return null;
+          const y = leftOf(key) ? labelY.get(key)! : y0;
+          const side = leftOf(key) ? { left: 8 } : { right: 8 + (laneOf.get(key) ?? 0) * 190 };
+          return y > paneH - 190 ? { bottom: paneH - y + 14, ...side } : { top: y + 14, ...side };
         };
         if (editor.kind === 'qty') {
           const o = orders.find((x) => x.id === editor.id);
@@ -736,7 +871,7 @@ export default function ChartTrading({ engine, seriesGen }: {
           if (!o || !at) return null;
           return (
             <QtyEditor
-              key={`qty:${o.id}`} at={at} title={`${orderTag(o.side, o.type)} @ ${px(o.price)}`} qty={o.qty} unit={unit}
+              key={`qty:${o.id}`} at={at} title={`${orderTag(o.side, o.type)} @ ${pxL(o, o.price)}`} qty={o.qty} unit={unit}
               riskPerUnit={o.sl != null ? Math.abs(o.price - o.sl) * rate : null}
               gainPerUnit={o.tp != null ? Math.abs(o.tp - o.price) * rate : null}
               onSave={(q) => st.modifyOrder(o.id, { qty: q })} onClose={close}

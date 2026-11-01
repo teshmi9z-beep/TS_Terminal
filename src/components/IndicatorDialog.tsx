@@ -4,7 +4,8 @@ import { useStore, indicatorKey } from '../store/store';
 import { getIndicatorDef, indicatorTitle, sourcePlots } from '../indicators/registry';
 import { PRICE_SOURCES, dependentsOf, sourceKey } from '../indicators/derived';
 import type { IndicatorDef, InputDef } from '../indicators/types';
-import type { IndicatorConfig, TfVisibility, VisibilityUnit } from '../types';
+import type { IndicatorConfig, LineStyleName, TfVisibility, VisibilityUnit } from '../types';
+import { LINE_STYLES } from './toolInfo';
 import { ColorSwatch } from './ColorPicker';
 
 // TradingView's indicator settings dialog: "Paramètres en entrée" (inputs grouped
@@ -161,13 +162,20 @@ function InputsTab({ cfg, def, update }: { cfg: IndicatorConfig; def: IndicatorD
           )))}
         </div>
       ))}
+      <div className="idg-section">
+        <div className="idg-group">Valeurs d’entrée</div>
+        <label className="idg-check"><input type="checkbox" checked={cfg.legendInputs !== false} onChange={(e) => update({ legendInputs: e.target.checked })} /><span>Entrées dans la ligne d’état</span></label>
+      </div>
     </div>
   );
 }
 
 // ---------------------------------------------------------------- style tab
 
-type StyleRow = { key: string; name: string; kind: string; color?: string; setColor?: (c: string) => void; shown?: boolean; setShown?: (v: boolean) => void; width?: number; setWidth?: (w: number) => void };
+type StyleRow = {
+  key: string; name: string; kind: string; color?: string; setColor?: (c: string) => void; shown?: boolean; setShown?: (v: boolean) => void;
+  width?: number; setWidth?: (w: number) => void; lineStyle?: LineStyleName; setLineStyle?: (s: LineStyleName) => void;
+};
 
 function styleRows(cfg: IndicatorConfig, def: IndicatorDef, update: (p: Partial<IndicatorConfig>) => void): StyleRow[] {
   const bb = cfg.type === 'BOLLINGER';
@@ -207,6 +215,8 @@ function styleRows(cfg: IndicatorConfig, def: IndicatorDef, update: (p: Partial<
     if (p.kind === 'line') {
       row.width = cfg.plotWidths?.[p.key] ?? p.width ?? 2;
       row.setWidth = (w) => update({ plotWidths: { ...cfg.plotWidths, [p.key]: w } });
+      row.lineStyle = cfg.plotStyles?.[p.key] ?? 'solid';
+      row.setLineStyle = (s) => update({ plotStyles: { ...cfg.plotStyles, [p.key]: s } });
     }
     return row;
   });
@@ -269,11 +279,21 @@ function StyleTab({ cfg, def, update }: { cfg: IndicatorConfig; def: IndicatorDe
                 {[1, 2, 3, 4].map((w) => <option key={w} value={w}>{w} px</option>)}
               </select>
             )}
+            {r.setLineStyle && (
+              <select className="idg-select" title="Style de ligne" value={r.lineStyle} onChange={(e) => r.setLineStyle!(e.target.value as LineStyleName)}>
+                {LINE_STYLES.map((l) => <option key={l.id} value={l.id}>{l.glyph} {l.label}</option>)}
+              </select>
+            )}
           </span>
         </div>
       ))}
       {!rows.length && <div className="idg-empty">Les couleurs de cet indicateur se règlent dans « Paramètres en entrée ».</div>}
       {!def.overlay && <LevelsEditor cfg={cfg} defaults={def.levels ?? []} update={update} />}
+      <div className="idg-section">
+        <div className="idg-group">Valeurs de sortie</div>
+        <label className="idg-check"><input type="checkbox" checked={cfg.axisLabels !== false} onChange={(e) => update({ axisLabels: e.target.checked })} /><span>Étiquettes sur l’échelle de prix</span></label>
+        <label className="idg-check"><input type="checkbox" checked={cfg.legendValues !== false} onChange={(e) => update({ legendValues: e.target.checked })} /><span>Valeurs dans la ligne d’état</span></label>
+      </div>
     </div>
   );
 }
@@ -320,7 +340,7 @@ function VisibilityTab({ cfg, update }: { cfg: IndicatorConfig; update: (p: Part
 
 const SAVED_FIELDS = [
   'period', 'color', 'stdDev', 'bandColors', 'bandVisible', 'dPeriod', 'slowPeriod', 'signalPeriod', 'volUpColor', 'volDownColor',
-  'inputs', 'plotColors', 'plotWidths', 'plotHidden', 'levels', 'levelColor', 'tfVisibility',
+  'inputs', 'plotColors', 'plotWidths', 'plotStyles', 'plotHidden', 'axisLabels', 'legendValues', 'legendInputs', 'levels', 'levelColor', 'tfVisibility',
 ] as const;
 
 export default function IndicatorDialog({ id, onClose }: { id: string; onClose: () => void }) {

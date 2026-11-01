@@ -33,8 +33,17 @@ export function yahooId(sym: Symbol): string | null {
   }
 }
 
+// a share of a US exchange (a ticker with no market suffix, AAPL, BRK-B): it trades before and after
+// the session too (pre-market from 4:00, after-hours until 20:00 New York)
+export function usShareId(sym: Symbol): string | null {
+  const y = sym.category === 'Actions' ? yahooId(sym) : null;
+  return y && /^[A-Z][A-Z0-9-]*$/.test(y) ? y : null;
+}
+
 // ordered list of feeds to try; the simulator is always the last resort
 export function feedChain(sym: Symbol): FeedRef[] {
+  // an IG market: IG's prices only (never another source's under its name)
+  if (sym.ig) return [{ source: 'ig', id: sym.ig }, { source: 'sim', id: sym.ticker }];
   const chain: FeedRef[] = [];
   const ib = ibId(sym);
   if (ib) chain.push({ source: 'ib', id: ib });

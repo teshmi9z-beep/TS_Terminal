@@ -30,6 +30,9 @@ export function remember(key: string, value: unknown, session = false) {
 // what a kept value is right now (undefined: not set while the app runs)
 export const peekKept = <T,>(key: string): T | undefined => memory.get(key) as T | undefined;
 
+// a kept value read outside its component, from the last session too (`init` if never set)
+export const readKept = <T,>(key: string, init: T, session = false): T => recall(key, () => init, session);
+
 // useState that remembers its value under `key`
 export function useKept<T>(key: string, init: T | (() => T), session = false): [T, (v: SetStateAction<T>) => void] {
   const [value, setValue] = useState<T>(() => recall(key, () => (typeof init === 'function' ? (init as () => T)() : init), session));

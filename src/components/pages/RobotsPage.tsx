@@ -10,6 +10,7 @@ import { LineChart } from './options/ui';
 import HourStudyCard from './HourStudyCard';
 import DowStudyCard from './DowStudyCard';
 import EmRobotCard from './EmRobotCard';
+import FluxStudyCard from './FluxStudyCard';
 import type { Stats } from '../../robots/engine';
 import { REAL_COSTS_FROM, type GeneralSetting, type RobotReport, type RobotStrategy } from '../../robots/report';
 import type { IndicatorConfig } from '../../types';
@@ -357,7 +358,7 @@ export default function RobotsPage() {
   const [showMarkets, setShowMarkets] = useState(false);
   // which selection: the best robots of every indicator, the Stoch Price Envelope range / trend
   // ones, the hour range (its study, and its robots when some pass), or the Dow structure study
-  const [view, setView] = useKept<'main' | 'spe' | 'hr' | 'dow' | 'em' | null>('view', null);
+  const [view, setView] = useKept<'main' | 'spe' | 'hr' | 'dow' | 'em' | 'flux' | null>('view', null);
   const listRef = useRef<HTMLElement>(null);
   const mainRef = useRef<HTMLElement>(null);
 
@@ -410,6 +411,7 @@ export default function RobotsPage() {
     ['Retenus au walk-forward (réglage refait chaque année)', list],
   ] : shown === 'em' ? [
     ['Non prouvés · la règle de l’étude, un robot par indice', list],
+  ] : shown === 'flux' ? [
   ] : shown === 'hr' ? [
     ['Validés sur plusieurs marchés à la fois', list.filter((s) => s.general)],
     ['Un seul marché · à confirmer', list.filter((s) => !s.general)],
@@ -453,8 +455,9 @@ export default function RobotsPage() {
             <button className={shown === 'main' ? 'on' : ''} onClick={() => setView('main')}>Meilleurs robots, tous indicateurs ({mainCount})</button>
             <button className={shown === 'dow' ? 'on' : ''} onClick={() => setView('dow')} title="Plus hauts / plus bas, cassure en clôture franche, retour dans la boîte, liquidité : l’étude de l’indicateur Structure de marché (Dow)">Structure Dow · price action ({dowCount})</button>
             <button className={shown === 'em' ? 'on' : ''} onClick={() => setView('em')} title="L’indicateur Expected Move calibré transformé en robot sur les indices : la seule règle qui tient un peu (non prouvée)">Expected Move · indices · non prouvé ({emCount})</button>
+            <button className={shown === 'flux' ? 'on' : ''} onClick={() => setView('flux')} title="Toujours dans le sens du flux MM20 / MM50, entrée sur un retour sur le nuage, un Fibonacci, un order block ou une imbalance : l’étude du 29 octobre">Flux MM20 / MM50 · étude, aucun robot gardé</button>
           </div>
-          <div className="rb-list-tools">
+          {shown !== 'flux' && <div className="rb-list-tools">
             <select value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
               {SORTS.map(([k, l]) => <option key={k} value={k}>Tri : {l}</option>)}
             </select>
@@ -462,7 +465,7 @@ export default function RobotsPage() {
               <option value="all">Tous les marchés</option>
               {markets.map((m) => <option key={m} value={m}>{MARKET_LABEL[m] ?? m}</option>)}
             </select>
-          </div>
+          </div>}
           {groups.map(([title, group]) => group.length > 0 && (
             <div key={title} className="rb-group">
               <div className="rb-group-title">{title}</div>
@@ -477,19 +480,20 @@ export default function RobotsPage() {
               ))}
             </div>
           ))}
-          {!list.length && <div className="rb-empty small">Aucune stratégie pour ce marché.</div>}
+          {!list.length && <div className="rb-empty small">{shown === 'flux' ? 'Aucun réglage n’a tenu : toute l’étude est à côté.' : 'Aucune stratégie pour ce marché.'}</div>}
         </aside>
         <main className="rb-main" ref={mainRef}>
           <ActiveRobots />
           {shown === 'hr' && <HourStudyCard />}
           {shown === 'dow' && <Folded id="dow" title="Structure Dow · ce que dit l’étude (verdict, walk-forward, heures actives, tous les marchés)"><DowStudyCard onPick={setSel} /></Folded>}
           {shown === 'em' && <EmRobotCard />}
-          {current ? <Report s={current} /> : shown !== 'hr' && <div className="rb-empty">Aucune stratégie ne remplit encore les critères.</div>}
+          {shown === 'flux' && <FluxStudyCard />}
+          {current ? <Report s={current} /> : shown !== 'hr' && shown !== 'flux' && <div className="rb-empty">Aucune stratégie ne remplit encore les critères.</div>}
           {shown !== 'main' && !!report.general?.some((g) => (g.set ?? 'spe') === shown) && (
             <GeneralCard rows={report.general.filter((g) => (g.set ?? 'spe') === shown)} strategies={report.strategies.filter((s) => s.set === shown)} onPick={setSel} />
           )}
 
-          <div className="rb-card">
+          {shown !== 'flux' && <div className="rb-card">
             <button className="rb-card-title rb-toggle" onClick={() => setShowMarkets(!showMarkets)}>
               {showMarkets ? '▾' : '▸'} Tous les marchés testés ({report.datasets.length})
             </button>
@@ -514,7 +518,7 @@ export default function RobotsPage() {
                 </div>
               </>
             )}
-          </div>
+          </div>}
         </main>
       </div>
     </div>

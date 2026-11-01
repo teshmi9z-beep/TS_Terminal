@@ -8,7 +8,7 @@ import {
 import PanelControls from './PanelControls';
 import { squarify } from './treemap';
 import { usePanelMode } from './panelMode';
-import { showOnChart } from './tabs/tabActions';
+import { openSymbolTab } from './tabs/tabActions';
 import ListScreener from './ListScreener';
 import { LOCALE } from '../i18n/lang';
 
@@ -233,8 +233,9 @@ export default function Screener({ display: pageDisplay }: { display?: 'table' |
   }, [data, st.filters, st.sort, search]);
 
   const pageMode = usePanelMode() === 'page';
-  // in its own tab, a row opens on the last chart used
-  const pick = (r: StockRow) => (pageMode ? showOnChart(stockSymbol(r, market)) : setSymbol(stockSymbol(r, market)));
+  // in its own tab, a row opens in a new chart tab, on one window (the last chart used may be split
+  // in 2 / 4 windows, none of which would show it); in the panel, on the chart next to it
+  const pick = (r: StockRow) => (pageMode ? openSymbolTab(stockSymbol(r, market)) : setSymbol(stockSymbol(r, market)));
   const setFilter = (p: Partial<ScreenerFilters>) => setSt({ filters: { ...st.filters, ...p } });
   const nFilters = filterCount(st.filters);
   const mk = MARKETS.find((m) => m.id === market)!;
@@ -392,7 +393,7 @@ export default function Screener({ display: pageDisplay }: { display?: 'table' |
               {rows.length > 600 && <div className="side-empty">600 premières lignes affichées : affinez avec les filtres ou la recherche.</div>}
             </div>
           )}
-          <div className="sc-foot">Données TradingView · {mk.label} · {data?.total ?? 0} actions (les {data?.rows.length ?? 0} plus grosses capitalisations) · clic = ouvrir sur le graphique</div>
+          <div className="sc-foot">Données TradingView · {mk.label} · {data?.total ?? 0} actions (les {data?.rows.length ?? 0} plus grosses capitalisations) · {pageMode ? 'clic = ouvrir dans un nouvel onglet' : 'clic = ouvrir sur le graphique'}</div>
         </>
       )}
     </div>

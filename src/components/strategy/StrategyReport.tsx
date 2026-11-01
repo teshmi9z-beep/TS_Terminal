@@ -27,7 +27,8 @@ const FILTERS: { id: TradeFilter; label: string }[] = [
   { id: 'long', label: 'Positions acheteuses' },
   { id: 'short', label: 'Positions vendeuses' },
 ];
-const BARS = [1000, 2000, 5000, 10000, 20000];
+// 0: every bar since 2020-01-01 (the default)
+const BARS = [0, 1000, 2000, 5000, 10000, 20000];
 const MONTHS = LANG === 'en' ? ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'] : ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
 
 const GREEN = '#3cb043';
@@ -479,7 +480,7 @@ export default function StrategyReport() {
             <label title="Historique chargé pour le backtest">
               Barres
               <select value={bars} onChange={(e) => setBars(parseInt(e.target.value))}>
-                {BARS.map((b) => <option key={b} value={b}>{b.toLocaleString(LOCALE)}</option>)}
+                {BARS.map((b) => <option key={b} value={b}>{b ? b.toLocaleString(LOCALE) : 'Depuis 2020'}</option>)}
               </select>
             </label>
           )}

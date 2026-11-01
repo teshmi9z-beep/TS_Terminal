@@ -49,7 +49,7 @@ export type StockRow = {
 
 const COLUMNS = [
   'name', 'description', 'logoid', 'exchange', 'currency', 'close', 'change', 'volume', 'relative_volume_10d_calc', 'market_cap_basic',
-  'sector', 'industry', 'price_earnings_ttm', 'earnings_per_share_diluted_ttm', 'dividend_yield_recent',
+  'sector', 'industry', 'price_earnings_ttm', 'earnings_per_share_diluted_ttm', 'dividends_yield_current',
   'Perf.W', 'Perf.1M', 'Perf.3M', 'Perf.6M', 'Perf.YTD', 'Perf.Y', 'RSI', 'Recommend.All', 'Volatility.D',
 ];
 

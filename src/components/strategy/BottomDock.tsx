@@ -7,6 +7,7 @@ import ReplayTradingPanel from '../ReplayTradingPanel';
 import OptionsReplayPanel from '../OptionsReplayPanel';
 import { useOptionsReplay } from '../../store/optionsReplay';
 import { useReplayTrading } from '../../store/replayTrading';
+import { brokerLabel, useBroker } from '../../store/broker';
 
 const TABS: { id: BottomTab; label: string }[] = [
   { id: 'editor', label: 'Éditeur de stratégie' },
@@ -23,7 +24,12 @@ const ic = { width: 14, height: 14, viewBox: '0 0 14 14', fill: 'none', stroke: 
 export default function BottomDock() {
   const dock = useStore((s) => s.bottomDock);
   const setDock = useStore((s) => s.setBottomDock);
-  const positions = useStore((s) => s.paper.positions.length);
+  // the "Trader" account: the virtual one, or the broker's
+  const active = useBroker((s) => s.active);
+  const broker = active !== 'paper';
+  const virtualPositions = useStore((s) => s.paper.positions.length);
+  const brokerPositions = useBroker((s) => s.snap?.positions.length ?? 0);
+  const positions = broker ? brokerPositions : virtualPositions;
   const replayPositions = useReplayTrading((s) => s.account.positions.length);
   const optionPositions = useOptionsReplay((s) => s.positions.length);
   const open = dock.tab != null;
@@ -54,7 +60,7 @@ export default function BottomDock() {
             key={t.id} className={`bd-tab ${dock.tab === t.id ? 'active' : ''}`}
             onClick={() => setDock({ tab: dock.tab === t.id ? null : t.id, ...(dock.tab === t.id ? { maximized: false } : {}) })}
           >
-            {t.label}
+            {t.id === 'trading' && broker ? `Trading ${brokerLabel(active)}` : t.label}
             {t.id === 'trading' && positions > 0 && <span className="bd-badge">{positions}</span>}
             {t.id === 'replay' && replayPositions > 0 && <span className="bd-badge">{replayPositions}</span>}
             {t.id === 'options' && optionPositions > 0 && <span className="bd-badge">{optionPositions}</span>}

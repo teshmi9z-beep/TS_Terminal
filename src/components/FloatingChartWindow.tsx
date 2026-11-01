@@ -1,7 +1,7 @@
 import { useStore } from '../store/store';
 import type { FreeWindow } from '../store/store';
 import MiniChartPane from './MiniChartPane';
-import { findSymbol } from './symbolDnd';
+import { chartSymbol } from './symbolDnd';
 import { openPopout } from './popouts';
 
 const MIN_W = 260;
@@ -46,7 +46,7 @@ export default function FloatingChartWindow({ win }: { win: FreeWindow }) {
   // turns this in-page window into a real browser window, at the same spot on screen
   function detach(e: React.MouseEvent) {
     e.stopPropagation();
-    const sym = findSymbol(win.ticker);
+    const sym = chartSymbol(win);
     if (!sym) return;
     const r = (e.currentTarget as HTMLElement).closest('.float-window')!.getBoundingClientRect();
     openPopout(sym, win.tf ?? timeframe, {
@@ -71,9 +71,10 @@ export default function FloatingChartWindow({ win }: { win: FreeWindow }) {
       </div>
       <div className="float-window-body">
         <MiniChartPane
-          initialTicker={win.ticker} initialTimeframe={win.tf}
-          onTickerChange={(t) => updateFreeWindow(win.id, { ticker: t })}
+          initialTicker={win.ticker} initialSymbol={win.symbol} initialTimeframe={win.tf} initialStyle={win.style}
+          onTickerChange={(t, sym) => updateFreeWindow(win.id, { ticker: t, symbol: sym })}
           onTimeframeChange={(tf) => updateFreeWindow(win.id, { tf })}
+          onStyleChange={(style) => updateFreeWindow(win.id, { style })}
         />
       </div>
       <div className="float-window-resize" onMouseDown={onResizeDown} />

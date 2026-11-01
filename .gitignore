@@ -27,6 +27,8 @@ dist-ssr
 /robots/
 # your own screenshots of trade setups
 /modeles/captures/
+# your watchlists saved day by day (scripts/list-backup.ts)
+/sauvegardes/
 # local Claude Code settings
 /.claude/
 # list written by scripts/i18n-extract.mjs

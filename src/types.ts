@@ -160,7 +160,7 @@ export const FIB_RETR_ALL = [0, 0.236, 0.382, 0.5, 0.618, 0.65, 0.786, 1];
 export const FIB_EXT_ALL = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1, 1.272, 1.414, 1.618, 2, 2.618];
 
 export type OverlayIndicatorType = 'SMA' | 'EMA' | 'ZLEMA' | 'WMA' | 'BOLLINGER' | 'VWAP' | 'DONCHIAN' | 'STOCH_ENV'
-  | 'FVG_CUSTOM' | 'IMBALANCE' | 'HA_CANDLES' | 'SESSIONS' | 'TSH_ARROW' | 'ROBOT' | 'HOUR_RANGE' | 'DOW_STRUCTURE' | 'INDEX_REGIME' | 'PIVOT_POINTS' | 'BASIS' | 'GAP_OPEN' | 'EXPECTED_MOVE';
+  | 'FVG_CUSTOM' | 'IMBALANCE' | 'HA_CANDLES' | 'SESSIONS' | 'TSH_ARROW' | 'ROBOT' | 'HOUR_RANGE' | 'DOW_STRUCTURE' | 'INDEX_REGIME' | 'PIVOT_POINTS' | 'BASIS' | 'GAP_OPEN' | 'EXPECTED_MOVE' | 'FLUX';
 export type PaneIndicatorType = 'RSI' | 'STOCH' | 'VOLUME' | 'MACD' | 'ATR' | 'CCI' | 'MOMENTUM' | 'OBV' | 'WILLR' | 'ADX' | 'STO_RSI';
 // PINE: a user script pasted in the Pine editor (cfg.scriptId)
 // STRATEGY: a strategy of the tester shown on the chart (cfg.strategyId): its indicators and trades
@@ -202,9 +202,15 @@ export type IndicatorConfig = {
   // "Source" of the indicators that have one: a price field ('close', 'hl2'...) or another
   // indicator's plot on the same chart, 'ind:<indicator id>:<plot key>' (indicator on indicator)
   source?: string;
-  // "Style" tab: line width and visibility of each plot
+  // "Style" tab: line width, line style (solid when absent) and visibility of each plot
   plotWidths?: Record<string, number>;
+  plotStyles?: Record<string, LineStyleName>;
   plotHidden?: Record<string, boolean>;
+  // TradingView's "Valeurs de sortie" / "Valeurs d'entrée" (all shown when absent): the price-axis
+  // labels of its plots, its values in the legend, its settings next to its name in the legend
+  axisLabels?: boolean;
+  legendValues?: boolean;
+  legendInputs?: boolean;
   // "Visibilité" tab: timeframes on which the indicator is drawn (all when absent)
   tfVisibility?: TfVisibility;
   // horizontal reference lines of a pane indicator (overrides the defaults, e.g. RSI 70/50/30)
@@ -291,6 +297,8 @@ export type Symbol = {
   binance?: string;
   // Interactive Brokers contract, "secType:symbol:exchange:currency" (e.g. CFD:IBUS30:SMART:USD)
   ib?: string;
+  // an IG market (its epic, IX.D.NASDAQ.IFE.IP): charted with IG's own prices
+  ig?: string;
 };
 
 export type WatchlistItem = Symbol & {
@@ -367,6 +375,10 @@ export const DEFAULT_CHART_SETTINGS = DEFAULT_CHART_SETTINGS_DARK;
 export type UiTheme = 'dark' | 'light';
 
 export type PriceScaleModeName = 'normal' | 'log' | 'percent';
+
+// ProRealTime's / TradingView's indicator templates: a chart's indicators with their settings,
+// saved under a name and put on any chart in one click (in place of the ones it shows)
+export type IndicatorTemplate = { name: string; indicators: IndicatorConfig[]; savedAt: number };
 
 export type Profile = {
   name: string;

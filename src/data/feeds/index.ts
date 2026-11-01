@@ -1,11 +1,12 @@
 import type { Candle, Symbol, Timeframe } from '../../types';
-import { feedChain, tradFiPerp } from './resolve';
+import { feedChain, tradFiPerp, usShareId } from './resolve';
 import { BinanceKlineSession, BinanceTickSession } from './binance';
-import { YahooSession } from './yahoo';
+import { YahooDailySession, YahooSession } from './yahoo';
 import { SimSession } from './sim';
 import { AggregatedSession } from './aggregate';
-import { binancePlan, ibPlan, yahooPlan } from './intervals';
-import { IbSession } from './ib';
+import { binancePlan, ibPlan, igPlan, yahooPlan } from './intervals';
+import { IbSession, ibSpan } from './ib';
+import { IgSession } from './ig';
 import { isDailyTf, isTickTf, parseTf, tfSeconds } from '../timeframes';
 import { CachingSession, openLocal, seriesInfo } from './local';
 import { LabBackedSession, LabSession, labSources, latestSource } from './lab';
@@ -30,7 +31,11 @@ function createSession(ref: FeedRef, sym: Symbol, tf: Timeframe): FeedSession | 
     case 'yahoo': {
       const p = yahooPlan(tf);
       if (!p) return null;
-      const s = new YahooSession(ref.id, p.native);
+      // a US share's intraday chart has its pre-market and after-hours bars too; the daily and weekly
+      // bars are rebuilt from the hourly ones when Yahoo has lost them
+      const s = p.native === '1d' || p.native === '1wk'
+        ? new YahooDailySession(ref.id, p.native)
+        : new YahooSession(ref.id, p.native, !isDailyTf(tf) && usShareId(sym) === ref.id);
       return p.aggregateTo ? new AggregatedSession(s, p.aggregateTo, true) : s;
     }
     case 'ib': {
@@ -39,9 +44,27 @@ function createSession(ref: FeedRef, sym: Symbol, tf: Timeframe): FeedSession | 
       const s = new IbSession(ref.id, p.native);
       return p.aggregateTo ? new AggregatedSession(s, p.aggregateTo, false) : s;
     }
+    case 'ig': {
+      const p = igPlan(tf);
+      if (!p) return null;
+      const s = new IgSession(ref.id, p.native);
+      return p.aggregateTo ? new AggregatedSession(s, p.aggregateTo, false) : s;
+    }
     case 'sim': return new SimSession(sym, tf);
     case 'local': return null;
   }
+}
+
+// the charts of these symbols, likely opened next, loaded in the background by the IBKR relay
+// (one at a time, kept on disk): opening one then asks IBKR only for the bars since. The other
+// sources answer within a second anyway.
+export function warmFeeds(syms: Symbol[], tf: Timeframe) {
+  const p = ibPlan(tf);
+  const dur = p && ibSpan(p.native);
+  if (!p || !dur) return;
+  const ids = syms.map((s) => feedChain(s)[0]).filter((r) => r?.source === 'ib').map((r) => r.id);
+  if (!ids.length) return;
+  void fetch(`/api/ib/warm?ids=${encodeURIComponent(ids.join(','))}&bar=${p.native}&dur=${encodeURIComponent(dur)}`).catch(() => undefined);
 }
 
 export type OpenedFeed = { session: FeedSession; candles: Candle[]; fallbackReason?: string };

@@ -4,13 +4,21 @@ import { useQuotes } from '../data/feeds/quotes';
 import { pricePrecision } from './chartUtils';
 import { findSymbol } from './symbolDnd';
 import { LOCALE } from '../i18n/lang';
+import { useBroker } from '../store/broker';
+import BrokerPortfolio from './BrokerPortfolio';
 
 const fmt = (v: number, d = 2) => v.toLocaleString(LOCALE, { minimumFractionDigits: d, maximumFractionDigits: d });
 const date = (t: number) => new Date(t).toLocaleString(LOCALE, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 
+// the account traded from the "Trader" button: the virtual one, or a broker's (BrokerPortfolio)
+export default function PortfolioPanel() {
+  const broker = useBroker((s) => s.active !== 'paper');
+  return broker ? <BrokerPortfolio /> : <VirtualPortfolio />;
+}
+
 // TradingView's paper trading panel, under the chart: account summary, then
 // positions / orders / history. Orders are placed from the "Trader" ticket.
-export default function PortfolioPanel() {
+function VirtualPortfolio() {
   const paper = useStore((s) => s.paper);
   const setSymbol = useStore((s) => s.setSymbol);
   const paperClose = useStore((s) => s.paperClose);

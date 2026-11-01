@@ -133,6 +133,12 @@ export async function fetchSymbolInfo(sym: Symbol): Promise<SymbolInfo> {
     try {
       if (ref.source === 'binance') return await binanceInfo(sym, ref.id);
       if (ref.source === 'yahoo') return await yahooInfo(sym, ref.id);
+      if (ref.source === 'ig') {
+        return {
+          fullSymbol: `IG:${sym.ticker}`, name: sym.name, type: 'CFD sur indice', exchange: 'IG',
+          dataSource: 'IG (compte du menu Trader) : milieu entre vente et achat, comme les graphiques d’IG',
+        };
+      }
       if (ref.source === 'ib') {
         const [secType, symbol, , currency] = ref.id.split(':');
         return {

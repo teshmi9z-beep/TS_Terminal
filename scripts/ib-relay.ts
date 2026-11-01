@@ -1,4 +1,6 @@
 import type { Connect, Plugin } from 'vite'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { join, resolve } from 'node:path'
 import { BarSizeSetting, EventName, IBApi, SecType, WhatToShow, type Contract } from '@stoqey/ib'
 
 // Relay to Interactive Brokers through the IB Gateway (or TWS) running on this computer, for
@@ -7,6 +9,7 @@ import { BarSizeSetting, EventName, IBApi, SecType, WhatToShow, type Contract } 
 //
 //   GET /api/ib/bars?id=CFD:IBUS30:SMART:USD&bar=15m&dur=1 M[&end=unix]  -> { candles }
 //   GET /api/ib/quotes?ids=id1,id2                                          -> { [id]: { last, bid, ask, prevClose, live } }
+//   GET /api/ib/warm?ids=id1,id2&bar=15m&dur=1 M                            -> { queued } (first pages loaded in the background)
 //
 // An id is "secType:symbol:exchange:currency", plus the trading class for a future
 // ("FUT:DAX:EUREX:EUR:FDAX"). A FUT id is the front month stitched from the real contracts,
@@ -33,6 +36,30 @@ const BARS: Record<string, BarSizeSetting> = {
   '2h': BarSizeSetting.HOURS_TWO, '3h': BarSizeSetting.HOURS_THREE, '4h': BarSizeSetting.HOURS_FOUR,
   '8h': BarSizeSetting.HOURS_EIGHT, '1d': BarSizeSetting.DAYS_ONE, '1w': BarSizeSetting.WEEKS_ONE, '1M': BarSizeSetting.MONTHS_ONE,
 }
+const STEPS: Record<string, number> = {
+  '1m': 60, '2m': 120, '3m': 180, '5m': 300, '10m': 600, '15m': 900, '20m': 1200, '30m': 1800, '1h': 3600,
+  '2h': 7200, '3h': 10800, '4h': 14400, '8h': 28800, '1d': 86400, '1w': 604800, '1M': 2678400,
+}
+// The bars received, kept on disk by contract and bar size (robots/cache/ib, never copied): a
+// chart opened again asks IBKR only for the bars since its last one. IBKR takes 5 to 70 s for a
+// first page (a month of 15-minute bars of a stitched future), well under a second for the
+// bars of the last hours.
+const CACHE_DIR = resolve('robots/cache/ib')
+// bars kept per series, the oldest dropped first
+const CACHE_BARS = 50_000
+// the warmed series brought up to date at most this often
+const WARM_FRESH = 5 * 60_000
+// '1M' (months) and '1m' (minutes) are one file name on Windows
+const cacheFile = (key: string) => join(CACHE_DIR, `${key.replace('|1M', '|month').replace(/[^\w.-]+/g, '_')}.json`)
+// a short request for the bars since `secs` ago (IBKR wants at least two bars' duration)
+function tailDur(secs: number, step: number): string {
+  const s = Math.max(secs, 2 * step)
+  if (step < 86400 && s <= 86400) return `${Math.ceil(s)} S`
+  if (step <= 86400) return `${Math.ceil(s / 86400) + 1} D`
+  if (step <= 604800) return `${Math.ceil(s / 604800) + 1} W`
+  return `${Math.ceil(s / 2678400) + 1} M`
+}
+
 // warnings the gateway sends with a request id without failing the request
 const isWarning = (code: number) => (code >= 2100 && code < 2200) || code === 10167 || code === 10090
 
@@ -42,6 +69,9 @@ type Details = { rows: Contract[]; resolve: (rows: Contract[]) => void; reject: 
 type Quote = { bid?: number; ask?: number; last?: number; prevClose?: number; live: boolean; reqId: number; readAt: number }
 // one contract of a stitched future: its bars from `from` (the previous contract's roll) to `to`
 type Leg = { contract: Contract; from: number; to: number }
+// the bars kept of one contract and bar size: complete from `from` to the last one; `topped`: when
+// they were last brought up to now (ms)
+type Series = { from: number; bars: Bar[]; topped: number; saving?: ReturnType<typeof setTimeout> }
 
 function contractOf(id: string): Contract {
   const [secType, symbol, exchange, currency, tradingClass] = id.split(':')
@@ -82,6 +112,13 @@ class IbLink {
   private recent = new Map<string, { at: number; rows: Promise<Bar[]> }>()
   // the contracts of each stitched future (checked every 6 hours)
   private chains = new Map<string, { at: number; legs: Promise<Leg[]> }>()
+  // the bars kept of each contract and bar size (read from disk on first use), and the first
+  // pages being asked from IBKR
+  private series = new Map<string, Promise<Series>>()
+  private loading = new Map<string, Promise<Bar[]>>()
+  // the first pages to load in the background, one at a time
+  private warmQueue: { id: string; bar: string; dur: string }[] = []
+  private warming = false
   private clientId = CLIENT_BASE + 1000 * (shared.__ibLinks = (shared.__ibLinks ?? 0) + 1)
   // the port that answered last, tried first next time
   private port = 0
@@ -203,11 +240,11 @@ class IbLink {
     const size = BARS[bar]
     if (!size) throw new Error(`unité IBKR inconnue : ${bar}`)
     if (!/^\d+ [SDWMY]$/.test(dur)) throw new Error(`durée IBKR invalide : ${dur}`)
-    const contract = contractOf(id)
+    contractOf(id)
     const key = `${id}|${bar}|${dur}|${end ?? ''}`
     const hit = this.recent.get(key)
     if (hit && Date.now() - hit.at < 15_000) return { candles: await hit.rows }
-    const rows = contract.secType === SecType.FUT ? this.stitched(id, size, dur, end) : this.request(contract, size, dur, end)
+    const rows = this.kept(id, bar, dur, end)
     this.recent.set(key, { at: Date.now(), rows })
     for (const [k, v] of this.recent) if (Date.now() - v.at > 60_000) this.recent.delete(k)
     try {
@@ -215,6 +252,128 @@ class IbLink {
     } catch (e) {
       this.recent.delete(key)
       throw e
+    }
+  }
+
+  // the bars of [end - dur, end), up to now without `end`: the kept ones when they cover the
+  // period, only the bars since the last one asked from IBKR
+  private async kept(id: string, bar: string, dur: string, end?: number, waited = false): Promise<Bar[]> {
+    const key = `${id}|${bar}`
+    const step = STEPS[bar]
+    const s = await this.stored(key)
+    const now = Math.floor(Date.now() / 1000)
+    const from = Math.min(end ?? now, now) - durSeconds(dur)
+    const to = end ?? Infinity
+    const slice = () => s.bars.filter((b) => b.time >= from && b.time < to)
+    const last = s.bars[s.bars.length - 1]
+    if (last && from >= s.from && last.time >= from) {
+      if (end !== undefined && end <= last.time) return slice()
+      // the last bar kept was still forming: asked again with the newer ones
+      const tail = await this.fetch(id, bar, tailDur(now - last.time + step, step))
+      // in place of the kept ones from its first bar, or after the last kept when it starts later
+      this.merge(key, s, tail, tail.length && tail[0].time <= last.time ? tail[0].time : last.time + 1, Infinity)
+      s.topped = Date.now()
+      return slice()
+    }
+    // a first page already asked (a background load, another chart): its bars, then the newer ones
+    const busy = end === undefined && !waited ? this.loading.get(key) : undefined
+    if (busy) {
+      await busy.catch(() => undefined)
+      return this.kept(id, bar, dur, end, true)
+    }
+    const rows = this.fetch(id, bar, dur, end)
+    if (end === undefined) {
+      this.loading.set(key, rows)
+      rows.catch(() => undefined).finally(() => { if (this.loading.get(key) === rows) this.loading.delete(key) })
+    }
+    const got = await rows
+    this.merge(key, s, got, from, to)
+    if (end === undefined) s.topped = Date.now()
+    return got
+  }
+
+  // one request to IBKR; a future is stitched from its contracts
+  private fetch(id: string, bar: string, dur: string, end?: number): Promise<Bar[]> {
+    const contract = contractOf(id)
+    return contract.secType === SecType.FUT ? this.stitched(id, BARS[bar], dur, end) : this.request(contract, BARS[bar], dur, end)
+  }
+
+  // the bars of [from, to) put in place of the kept ones there; a period apart from the kept bars
+  // replaces them when newer, and is not kept when older
+  private merge(key: string, s: Series, rows: Bar[], from: number, to: number) {
+    if (!rows.length) return
+    const lo = Math.min(from, rows[0].time)
+    const hi = Math.max(to, rows[rows.length - 1].time + 1)
+    const last = s.bars[s.bars.length - 1]
+    if (!last || lo > last.time + STEPS[key.split('|')[1]]) {
+      s.bars = rows
+      s.from = lo
+    } else if (hi >= s.from) {
+      s.bars = [...s.bars.filter((b) => b.time < lo), ...rows, ...s.bars.filter((b) => b.time >= hi)]
+      s.from = Math.min(s.from, lo)
+    } else return
+    if (s.bars.length > CACHE_BARS) {
+      s.bars = s.bars.slice(-CACHE_BARS)
+      s.from = s.bars[0].time
+    }
+    this.save(key, s)
+  }
+
+  private stored(key: string): Promise<Series> {
+    let s = this.series.get(key)
+    if (!s) {
+      s = readFile(cacheFile(key), 'utf8')
+        .then((text): Series => {
+          const j = JSON.parse(text) as { from: number; bars: number[][] }
+          return { from: j.from, bars: j.bars.map(([time, open, high, low, close, volume]) => ({ time, open, high, low, close, volume })), topped: 0 }
+        })
+        .catch((): Series => ({ from: Infinity, bars: [], topped: 0 }))
+      this.series.set(key, s)
+    }
+    return s
+  }
+
+  // written half a minute after a change (the live bars change at each poll); bars lost when the
+  // server stops before are asked again with the next ones
+  private save(key: string, s: Series) {
+    if (s.saving) return
+    s.saving = setTimeout(() => {
+      s.saving = undefined
+      const bars = s.bars.map((b) => [b.time, b.open, b.high, b.low, b.close, b.volume])
+      mkdir(CACHE_DIR, { recursive: true })
+        .then(() => writeFile(cacheFile(key), JSON.stringify({ from: s.from, bars })))
+        .catch((e) => console.warn('[ib] cache :', e instanceof Error ? e.message : e))
+    }, 30_000)
+  }
+
+  // first pages loaded in the background for the charts likely opened next (the markets of a
+  // list): one request at a time, a series brought up to date in the last minutes skipped
+  warm(ids: string[], bar: string, dur: string): number {
+    if (!BARS[bar] || !/^\d+ [SDWMY]$/.test(dur)) throw new Error('préchargement IBKR invalide')
+    let queued = 0
+    for (const id of ids) {
+      contractOf(id)
+      if (this.warmQueue.some((w) => w.id === id && w.bar === bar)) continue
+      this.warmQueue.push({ id, bar, dur })
+      queued++
+    }
+    void this.runWarm()
+    return queued
+  }
+
+  private async runWarm() {
+    if (this.warming) return
+    this.warming = true
+    try {
+      for (let w = this.warmQueue.shift(); w; w = this.warmQueue.shift()) {
+        const s = await this.stored(`${w.id}|${w.bar}`)
+        if (Date.now() - s.topped < WARM_FRESH) continue
+        try { await this.bars(w.id, w.bar, w.dur) } catch { /* the chart says it when opened */ }
+        // IBKR paces the historical requests: a pause between two
+        await new Promise((r) => setTimeout(r, 1000))
+      }
+    } finally {
+      this.warming = false
     }
   }
 
@@ -351,6 +510,9 @@ export function ibRelay(): Plugin {
       } else if (url.pathname === '/quotes') {
         const ids = (q.get('ids') ?? '').split(',').filter(Boolean).slice(0, 50)
         json(res, 200, await link.quote(ids))
+      } else if (url.pathname === '/warm') {
+        const ids = (q.get('ids') ?? '').split(',').filter(Boolean).slice(0, 30)
+        json(res, 200, { queued: link.warm(ids, q.get('bar') ?? '', q.get('dur') ?? '') })
       } else json(res, 404, { error: 'inconnu' })
     } catch (e) {
       json(res, 503, { error: e instanceof Error ? e.message : String(e) })

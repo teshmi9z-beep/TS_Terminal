@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { IndicatorType, Symbol, TechAlert, Timeframe } from '../types';
 import type { FeedSource } from '../data/feeds/types';
-import { useStore, type PaperSide, type Popout } from './store';
+import { useStore, type ChartLayout, type PaperSide, type Popout } from './store';
 import type { OrderDraft } from '../components/orderDraft';
 import type { BacktestResult } from '../strategy/types';
 import type { Operand } from '../strategy/rules';
@@ -9,7 +9,7 @@ import type { Operand } from '../strategy/rules';
 // transient UI state shared between the chart and its surrounding panels (never persisted)
 
 export type SearchMode = 'switch' | 'add' | 'compare';
-export type DialogId = 'indicators' | 'settings' | 'symbolInfo' | 'offline';
+export type DialogId = 'indicators' | 'settings' | 'symbolInfo' | 'offline' | 'brokers' | 'tradingSettings' | 'guards';
 
 // the symbol menu of a small chart (2 / 4 windows, free windows): its own symbol, timeframe,
 // price and hidden series (without one, the menu is the main chart's)
@@ -84,13 +84,15 @@ type ChartUi = {
   alertDraft: AlertDraft | null;
   openAlert: (d: AlertDraft | null) => void;
 
-  // indicator whose source code is shown
-  codeFor: { type: IndicatorType; scriptId?: string } | null;
-  setCodeFor: (t: { type: IndicatorType; scriptId?: string } | null) => void;
+  // indicator whose source code is shown (`indicatorId`: opened from that indicator on the chart)
+  codeFor: { type: IndicatorType; scriptId?: string; indicatorId?: string } | null;
+  setCodeFor: (t: { type: IndicatorType; scriptId?: string; indicatorId?: string } | null) => void;
 
-  // Pine editor: a new script, or the script being edited
-  pineEditor: { open: boolean; scriptId?: string };
-  openPineEditor: (scriptId?: string) => void;
+  // Pine editor: a new script, or the script being edited; `replaceId`: the chart's indicator this
+  // script (an editable copy of it) takes the place of when first saved
+  // `draft`: code not saved yet, carried over when the editor is detached or put back in the panel
+  pineEditor: { open: boolean; scriptId?: string; replaceId?: string; draft?: string };
+  openPineEditor: (scriptId?: string, replaceId?: string) => void;
   closePineEditor: () => void;
 
   // the symbol "..." menu, at screen coordinates
@@ -101,8 +103,8 @@ type ChartUi = {
   openSymbolInfo: (s: Symbol) => void;
 
   // a small chart shown big ("⛶"): the layout to go back to (2 / 4 windows, free windows)
-  returnLayout: 2 | 4 | 'free' | null;
-  setReturnLayout: (l: 2 | 4 | 'free' | null) => void;
+  returnLayout: Exclude<ChartLayout, 1> | null;
+  setReturnLayout: (l: Exclude<ChartLayout, 1> | null) => void;
 
   mainHidden: boolean;
   setMainHidden: (v: boolean) => void;
@@ -199,9 +201,10 @@ export const useChartUi = create<ChartUi>()((set) => ({
   setCodeFor: (t) => set({ codeFor: t }),
 
   pineEditor: { open: false },
-  openPineEditor: (scriptId) => {
-    set({ pineEditor: { open: true, scriptId }, codeFor: null, dialog: null });
-    useStore.getState().setRightPanel('pine');
+  openPineEditor: (scriptId, replaceId) => {
+    set({ pineEditor: { open: true, scriptId, replaceId }, codeFor: null, dialog: null });
+    // detached, the editor shows in its own window instead of the right panel
+    if (!useStore.getState().pineFloat) useStore.getState().setRightPanel('pine');
   },
   closePineEditor: () => set({ pineEditor: { open: false } }),
 

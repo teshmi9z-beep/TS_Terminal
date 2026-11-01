@@ -3,6 +3,7 @@ import { useStore } from '../store/store';
 import { useChartUi } from '../store/chartUi';
 import { closeAllPopouts, listScreens, openPopout, openPopoutOnScreen, reopenPopout, type ScreenInfo } from './popouts';
 import { tfShortLabel } from '../data/timeframes';
+import { TOOL_LABELS } from './tabs/tabActions';
 
 export default function LayoutMenu({ onClose }: { onClose: () => void }) {
   const layout = useStore((s) => s.layout);
@@ -19,7 +20,7 @@ export default function LayoutMenu({ onClose }: { onClose: () => void }) {
       <div className="modal layout-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-title">Disposition dans cet onglet</div>
         <div className="layout-options">
-          {([1, 2, 4] as const).map((n) => (
+          {([1, 2, 3, 4, 6] as const).map((n) => (
             <button key={n} className={`layout-opt ${layout === n ? 'active' : ''}`} onClick={() => { setLayout(n); onClose(); }}>
               <div className={`layout-preview grid-${n}`}>
                 {Array.from({ length: n }).map((_, i) => <span key={i} />)}
@@ -76,7 +77,7 @@ export default function LayoutMenu({ onClose }: { onClose: () => void }) {
               {popouts.map((p) => (
                 <div key={p.id} className="modal-item active-item">
                   <span className={`popout-state ${p.open ? 'open' : ''}`} title={p.open ? 'Ouverte' : 'Fermée'} />
-                  <span className="popout-name">{p.symbol.ticker} · {tfShortLabel(p.tf)}</span>
+                  <span className="popout-name">{p.tool ? TOOL_LABELS[p.tool] : `${p.symbol.ticker} · ${tfShortLabel(p.tf)}`}</span>
                   <span className="popout-geo">{p.width && p.height ? `${p.width}×${p.height}` : ''}</span>
                   <button className="pill-btn" onClick={() => reopenPopout(p)}>{p.open ? 'Afficher' : 'Rouvrir'}</button>
                   <button className="remove-btn" title="Oublier cette fenêtre" onClick={() => removePopout(p.id)}>✕</button>

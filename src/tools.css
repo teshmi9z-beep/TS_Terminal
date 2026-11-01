@@ -326,6 +326,14 @@
 .dow-years span { font-size: 11px; padding: 1px 4px; border-radius: 3px; background: var(--bg-hover); }
 .dow-years span.up { color: var(--up, #089981); }
 .dow-years span.down { color: var(--down, #f23645); }
+.fx-badge { margin-left: 8px; font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 3px; border: 1px solid #f0b90b; color: #f0b90b; }
+.fx-table td small { display: block; }
+.fx-table > thead th:nth-child(3) { text-align: right; }
+.fx-groups th:nth-child(3), .fx-groups td:nth-child(3) { text-align: left; }
+.fx-per { width: auto; margin: 4px 0 6px 16px; }
+.fx-per th, .fx-per td { text-align: right !important; }
+.fx-per th:first-child, .fx-per td:first-child { text-align: left !important; }
+.fx-per td small { display: inline; }
 .rb-hours-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .rb-hours-title select { background: var(--bg-hover); border: 1px solid var(--border); color: var(--text); border-radius: 3px; font-size: 12px; }
 .dow-hours { display: grid; grid-template-columns: repeat(24, 1fr); gap: 3px; height: 120px; align-items: end; margin: 6px 0 4px; }

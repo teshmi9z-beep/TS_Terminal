@@ -185,7 +185,10 @@ export function swings(x: Ctx, k: number): { hiAt: Int32Array; loAt: Int32Array 
 // entry: a limit price (else the next bar's open); expire: bars the limit waits;
 // maxBars: bars held at most; exitAt: a bar index to be out by (e.g. the day's end)
 // trail: a chandelier stop, that many ATR 14 from the best price since the entry
-export type Order = { i: number; dir: 1 | -1; stop: number; target: number; entry?: number; expire?: number; maxBars?: number; exitAt?: number; trail?: number };
+// through: a limit fills only once the price trades that far past it (no fill on a mere touch)
+// sized: a limit's result counted in units of its planned risk (limit to stop), as the position
+// is sized when the order is placed: a better fill on a gap doesn't inflate the R multiple
+export type Order = { i: number; dir: 1 | -1; stop: number; target: number; entry?: number; expire?: number; maxBars?: number; exitAt?: number; trail?: number; through?: number; sized?: boolean };
 export type Trade = { e: number; x: number; t: number; dir: 1 | -1; r: number; costR: number };
 
 // the most a trade may pay in costs, as a share of its risk
@@ -209,13 +212,20 @@ export function simulate(x: Ctx, orders: Order[]): Trade[] {
       const last = Math.min(n - 1, od.i + (od.expire ?? 1), od.exitAt ?? n - 1);
       for (let j = od.i + 1; j <= last; j++) {
         if (roll[j]) continue;
-        if (d > 0 ? b.l[j] <= od.entry : b.h[j] >= od.entry) { e = j; entry = d > 0 ? Math.min(b.o[j], od.entry) : Math.max(b.o[j], od.entry); break; }
+        const past = od.through ?? 0;
+        if (d > 0 ? b.l[j] <= od.entry - past : b.h[j] >= od.entry + past) { e = j; entry = d > 0 ? Math.min(b.o[j], od.entry) : Math.max(b.o[j], od.entry); break; }
       }
       if (e < 0) continue;
     }
-    const risk = d * (entry - od.stop);
+    const sized = od.sized && od.entry !== undefined;
+    const risk = sized ? d * (od.entry! - od.stop) : d * (entry - od.stop);
     if (!(risk > 0)) continue;
     const costR = (2 * x.m.cost * entry) / risk;
+    // a gap past the stop as well: filled and stopped out at the same open, the costs lost
+    if (sized && !(d * (entry - od.stop) > 0)) {
+      if (costR <= MAX_COST_R) { out.push({ e, x: e, t: b.t[e], dir: d, r: -costR, costR }); free = e; }
+      continue;
+    }
     if (costR > MAX_COST_R) continue;
     if (!Number.isNaN(od.target) && d * (od.target - entry) <= 0) continue;
     const end = Math.min(n - 1, od.exitAt ?? n - 1, od.maxBars ? e + od.maxBars - 1 : n - 1);

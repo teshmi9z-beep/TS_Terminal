@@ -4,7 +4,14 @@ import { PineError, type Expr, type Program, type Stmt } from './parser';
 // Bar-by-bar Pine interpreter. Like Pine, every expression is a series: `x[n]`
 // reads its value n bars ago, and every ta.* call site keeps its own state.
 
-export type Value = number | boolean | string | null | Value[];
+export type Value = number | boolean | string | null | Value[] | PineArray;
+
+// a Pine array (array.new_float...): a mutable list shared by every variable holding it;
+// Value[] stays a tuple ([a, b] = f())
+export class PineArray {
+  items: Value[];
+  constructor(items: Value[]) { this.items = items; }
+}
 
 export type PlotOut = {
   key: string; title: string; step: boolean; histogram: boolean; linewidth: number;
@@ -242,6 +249,17 @@ export class PineRuntime {
       case 'id': return this.ident(e.name, f, 0, e.line);
       case 'tuple': return e.items.map((x) => this.ev(x, f));
       case 'ifx': return this.ifChain(e.branches, f);
+      case 'switchx': {
+        // the subject once; a case matches like "==" (strings as strings, else as numbers)
+        const subj = e.subject ? this.ev(e.subject, f) : null;
+        for (const c of e.cases) {
+          if (c.val === null) return this.block(c.body, f);
+          const v = this.ev(c.val, f);
+          const hit = !e.subject ? truthy(v) : typeof subj === 'string' || typeof v === 'string' ? subj === v : num(subj) === num(v);
+          if (hit) return this.block(c.body, f);
+        }
+        return null;
+      }
       case 'un': {
         const v = this.ev(e.e, f);
         return e.op === 'not' ? !truthy(v) : e.op === '-' ? -num(v) : num(v);
@@ -435,6 +453,16 @@ export class PineRuntime {
     const fn = this.fns.has(e.fn) ? e.fn : V4_FUNCTIONS[e.fn] ?? e.fn;
     const key = this.key(f, e.id);
     this.curLine = e.line;
+
+    // arrays: array.xxx(a, ...) or the method form a.xxx(...) on a variable holding one
+    const dot = e.fn.indexOf('.');
+    const owner = dot > 0 && !this.fns.has(e.fn) && f.find(e.fn.slice(0, dot)) ? this.ident(e.fn.slice(0, dot), f, 0, e.line) : null;
+    if (fn.startsWith('array.') || owner instanceof PineArray) {
+      const pos = e.args.map((a) => this.ev(a, f));
+      const named: Record<string, Value> = {};
+      for (const [n, a] of Object.entries(e.named)) named[n] = this.ev(a, f);
+      return owner instanceof PineArray ? this.arrayCall(`array.${e.fn.slice(dot + 1)}`, [owner, ...pos], named, e.line) : this.arrayCall(fn, pos, named, e.line);
+    }
 
     if (fn.startsWith('strategy.') && this.opts.strategy) {
       const pos = e.args.map((a) => this.ev(a, f));
@@ -765,8 +793,65 @@ export class PineRuntime {
       }
     }
     if (fn.startsWith('request.')) throw new PineError(`${fn} (données d’un autre symbole / unité) n’est pas pris en charge`, e.line);
-    if (fn.startsWith('array.') || fn.startsWith('matrix.') || fn.startsWith('map.')) throw new PineError(`les tableaux (${fn}) ne sont pas encore pris en charge`, e.line);
+    if (fn.startsWith('matrix.') || fn.startsWith('map.')) throw new PineError(`les matrices et dictionnaires (${fn}) ne sont pas encore pris en charge`, e.line);
     throw new PineError(`fonction « ${fn} » non prise en charge`, e.line);
+  }
+
+  // the usual array functions (array.new_*, from, size, get, set, push, pop, sort, sum, avg...)
+  private arrayCall(fn: string, pos: Value[], named: Record<string, Value>, line: number): Value {
+    const m = fn.slice('array.'.length);
+    if (m.startsWith('new')) {
+      const size = Math.max(0, Math.round(num(named.size ?? pos[0] ?? 0)) || 0);
+      const init = named.initial_value ?? pos[1] ?? NaN;
+      return new PineArray(Array.from({ length: size }, () => init));
+    }
+    if (m === 'from') return new PineArray([...pos]);
+    const a = named.id ?? pos[0];
+    if (!(a instanceof PineArray)) throw new PineError(`${fn} : un tableau est attendu`, line);
+    const xs = a.items;
+    const at = (v: Value | undefined) => {
+      let k = Math.trunc(num(v ?? NaN));
+      if (k < 0) k += xs.length;
+      if (!(k >= 0 && k < xs.length)) throw new PineError(`${fn} : indice ${num(v ?? NaN)} hors du tableau (taille ${xs.length})`, line);
+      return k;
+    };
+    const same = (x: Value, y: Value) => (typeof x === 'string' || typeof y === 'string' ? x === y : num(x) === num(y));
+    const nums = () => xs.map(num).filter((x) => !isNaN(x));
+    const value = named.value ?? pos[pos.length > 2 ? 2 : 1] ?? NaN;
+    switch (m) {
+      case 'size': return xs.length;
+      case 'get': return xs[at(named.index ?? pos[1])];
+      case 'set': xs[at(named.index ?? pos[1])] = named.value ?? pos[2] ?? NaN; return null;
+      case 'push': xs.push(named.value ?? pos[1] ?? NaN); return null;
+      case 'unshift': xs.unshift(named.value ?? pos[1] ?? NaN); return null;
+      case 'insert': xs.splice(Math.max(0, Math.min(xs.length, Math.trunc(num(named.index ?? pos[1] ?? 0)))), 0, value); return null;
+      case 'pop': return xs.length ? xs.pop()! : NaN;
+      case 'shift': return xs.length ? xs.shift()! : NaN;
+      case 'remove': return xs.splice(at(named.index ?? pos[1]), 1)[0];
+      case 'clear': xs.length = 0; return null;
+      case 'first': return xs.length ? xs[0] : NaN;
+      case 'last': return xs.length ? xs[xs.length - 1] : NaN;
+      case 'includes': return xs.some((x) => same(x, named.value ?? pos[1] ?? NaN));
+      case 'indexof': return xs.findIndex((x) => same(x, named.value ?? pos[1] ?? NaN));
+      case 'lastindexof': { for (let k = xs.length - 1; k >= 0; k--) if (same(xs[k], named.value ?? pos[1] ?? NaN)) return k; return -1; }
+      case 'sum': return nums().reduce((s, x) => s + x, 0);
+      case 'avg': { const v = nums(); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : NaN; }
+      case 'max': { const v = nums(); return v.length ? Math.max(...v) : NaN; }
+      case 'min': { const v = nums(); return v.length ? Math.min(...v) : NaN; }
+      case 'median': { const v = nums().sort((p, q) => p - q); return v.length ? (v.length % 2 ? v[(v.length - 1) / 2] : (v[v.length / 2 - 1] + v[v.length / 2]) / 2) : NaN; }
+      case 'stdev': { const v = nums(); if (!v.length) return NaN; const mu = v.reduce((s, x) => s + x, 0) / v.length; return Math.sqrt(v.reduce((s, x) => s + (x - mu) ** 2, 0) / v.length); }
+      case 'sort': { const desc = String(named.order ?? pos[1] ?? '').includes('descending'); xs.sort((p, q) => (desc ? num(q) - num(p) : num(p) - num(q))); return null; }
+      case 'reverse': xs.reverse(); return null;
+      case 'copy': return new PineArray([...xs]);
+      case 'slice': return new PineArray(xs.slice(Math.trunc(num(named.index_from ?? pos[1] ?? 0)), Math.trunc(num(named.index_to ?? pos[2] ?? xs.length))));
+      case 'concat': { const b = named.id2 ?? pos[1]; if (b instanceof PineArray) xs.push(...b.items); return a; }
+      case 'fill': {
+        const from = Math.trunc(num(named.index_from ?? pos[2] ?? 0)), to = Math.trunc(num(named.index_to ?? pos[3] ?? xs.length));
+        for (let k = Math.max(0, from); k < Math.min(xs.length, to); k++) xs[k] = named.value ?? pos[1] ?? NaN;
+        return null;
+      }
+    }
+    throw new PineError(`${fn} n’est pas encore pris en charge`, line);
   }
 
   private input(e: Extract<Expr, { k: 'call' }>, fn: string, pos: Value[], named: Record<string, Value>): Value {

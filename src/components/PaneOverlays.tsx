@@ -15,6 +15,7 @@ import { GearIcon } from './GearIcon';
 import { tfShortLabel } from '../data/timeframes';
 import type { Symbol, Timeframe } from '../types';
 import { DEC } from '../i18n/lang';
+import { BrokerLogo } from './BrokerDialog';
 
 type Rect = { top: number; height: number };
 
@@ -65,9 +66,16 @@ export default function PaneOverlays({ engine, containerRef, mini }: {
   const updateIndicator = useStore((s) => s.updateIndicator);
   const removeIndicator = useStore((s) => s.removeIndicator);
   const moveIndicator = useStore((s) => s.moveIndicator);
+  const movePaneTo = useStore((s) => s.movePaneTo);
+  // a pane being dragged (by its title or its grip) and the pane it would go to
+  const [dragPane, setDragPane] = useState<string | null>(null);
+  const [dropPane, setDropPane] = useState<number | null>(null);
   const storeSymbol = useStore((s) => s.symbol);
   const storeTimeframe = useStore((s) => s.timeframe);
   const symbol = mini?.symbol ?? storeSymbol;
+  // an IG market (US Tech 100 Cash...), charted with IG's prices: IG's logo before its name; never on
+  // the platform's other markets, whatever IG contract their ticket trades
+  const isIg = !!symbol.ig;
   const timeframe = mini?.timeframe ?? storeTimeframe;
   const upColor = useStore((s) => s.chartSettings.upColor);
   const downColor = useStore((s) => s.chartSettings.downColor);
@@ -154,6 +162,34 @@ export default function PaneOverlays({ engine, containerRef, mini }: {
   // the indicator owning each pane (an average of an oscillator shares the oscillator's)
   const paneIds = e.indicators.filter((r, i) => r.pane > 0 && e.indicators.findIndex((x) => x.pane === r.pane) === i).map((r) => r.cfg.id);
 
+  // ProRealTime's way: a pane taken by its title or its grip and dropped on another pane takes its
+  // place (on the price pane: first); the arrows still move it by one
+  const dragFrom = (ownerId: string) => (ev: React.DragEvent) => {
+    ev.stopPropagation();
+    ev.dataTransfer.setData(PANE_MIME, ownerId);
+    ev.dataTransfer.effectAllowed = 'move';
+    // the panes become drop targets just after the drag has started
+    setTimeout(() => setDragPane(ownerId));
+  };
+  const dragEnd = () => { setDragPane(null); setDropPane(null); };
+  const dropOn = (i: number, ownerId: string | undefined) => ({
+    onDragOver: (ev: React.DragEvent) => {
+      if (!ev.dataTransfer.types.includes(PANE_MIME)) return;
+      ev.preventDefault();
+      ev.dataTransfer.dropEffect = 'move';
+      if (dropPane !== i) setDropPane(i);
+    },
+    onDrop: (ev: React.DragEvent) => {
+      const id = ev.dataTransfer.getData(PANE_MIME);
+      if (!id) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const to = ownerId ?? paneIds[0];
+      if (to && to !== id) movePaneTo(id, to);
+      dragEnd();
+    },
+  });
+
   function legendRow(rt: IndicatorRuntime) {
     const cfg = liveCfg(rt);
     const def = getIndicatorDef(cfg);
@@ -167,11 +203,18 @@ export default function PaneOverlays({ engine, containerRef, mini }: {
       strategyPick({ kind: 'indicator', cfg: { ...cfg }, plot: key });
     };
     const picking = strategyPick != null && seriesPlots.length > 0;
+    // an indicator's pane, with others to swap places with, moves by its title
+    const owner = rt.pane > 0 ? paneRuntimes(rt.pane)[0]?.cfg.id : undefined;
+    const movable = !!owner && paneIds.length > 1 && !picking;
     return (
       <div key={cfg.id} className={`pl-row ${hidden ? 'is-hidden' : ''} ${picking ? 'pickable' : ''}`}>
-        <span className="pl-title" onClick={picking ? () => pick() : undefined} title={picking ? 'Choisir cet indicateur pour la stratégie' : undefined}>{indicatorTitle(cfg)}</span>
+        <span
+          className={`pl-title ${movable ? 'pl-drag' : ''}`} onClick={picking ? () => pick() : undefined}
+          title={picking ? 'Choisir cet indicateur pour la stratégie' : movable ? 'Glisser sur un autre panneau pour l’y déplacer' : undefined}
+          draggable={movable} onDragStart={movable ? dragFrom(owner!) : undefined} onDragEnd={movable ? dragEnd : undefined}
+        >{cfg.legendInputs === false ? def?.short ?? cfg.type : indicatorTitle(cfg)}</span>
         {pineError && <span className="pl-error" title={pineError}>⚠ erreur</span>}
-        {!hidden && seriesPlots.map((plot) => {
+        {!hidden && cfg.legendValues !== false && seriesPlots.map((plot) => {
           const v = valueAt(plot.data, t);
           if (!v || !Number.isFinite(v.value)) return null;
           const txt = def?.volumeFormat ? formatVolume(v.value) : formatPrice(v.value, rt.pane === 0 ? p : 2);
@@ -191,7 +234,7 @@ export default function PaneOverlays({ engine, containerRef, mini }: {
             <button className="pl-btn" title="Modifier la stratégie" onClick={() => useStore.getState().setBottomDock({ tab: 'editor' })}><GearIcon size={13} /></button>
           ) : (
             <>
-              <button className="pl-btn pl-code" title="Code source" onClick={() => setCodeFor({ type: cfg.type, scriptId: cfg.scriptId })}>{'{}'}</button>
+              <button className="pl-btn pl-code" title="Code source" onClick={() => setCodeFor({ type: cfg.type, scriptId: cfg.scriptId, indicatorId: cfg.id })}>{'{}'}</button>
               <button className="pl-btn" title="Paramètres" onClick={() => setSettingsId(settingsId === cfg.id ? null : cfg.id)}><GearIcon size={13} /></button>
               {seriesPlots.length > 0 && (
                 <button
@@ -270,9 +313,14 @@ export default function PaneOverlays({ engine, containerRef, mini }: {
         const maximized = cfg != null && maximizedId === cfg.id;
         const collapsed = cfg != null && !!cfg.collapsed && !maximized;
         return (
-          <div key={i} className="pane-overlay" style={{ top: r.top, height: r.height, width: plotWidth }}>
+          <div
+            key={i} className={`pane-overlay ${dragPane ? 'pane-drop' : ''} ${dragPane && dropPane === i ? 'drop-target' : ''}`}
+            style={{ top: r.top, height: r.height, width: plotWidth }}
+            {...(dragPane ? dropOn(i, cfg?.id) : {})}
+          >
             {i === 0 && (
               <div className="main-legend chart-ui">
+                {isIg && <span className="ml-ig" title="Marché IG : cours d’IG"><BrokerLogo id="ig" size={mini ? 14 : 17} /></span>}
                 {mini ? <span className="ml-symbol">{symbol.name || symbol.ticker}</span> : (
                   <button
                     className={`ml-symbol ${strategyPick ? 'pickable' : ''}`}
@@ -332,7 +380,9 @@ export default function PaneOverlays({ engine, containerRef, mini }: {
                 </button>
               </div>
             )}
-            {(rts.length > 0 || (i === 0 && compares.length > 0)) && !(i === 0 && maximizedId && paneIds.includes(maximizedId)) && (
+            {(rts.length > 0 || (i === 0 && compares.length > 0)) && !(i === 0 && maximizedId && paneIds.includes(maximizedId))
+              // an indicator pane of a small chart too low for its legend: no legend rather than one over the next pane
+              && !(mini && i > 0 && r.height < 30) && (
               <div className={`pane-legend chart-ui ${i === 0 ? 'under-main' : ''} ${i === 0 && tradingOpen && replayMode !== 'select' ? 'with-trade' : ''}`}>
                 {i === 0 && compares.map(compareRow)}
                 {rts.map(legendRow)}
@@ -340,6 +390,9 @@ export default function PaneOverlays({ engine, containerRef, mini }: {
             )}
             {cfg && (
               <div className={`pane-controls chart-ui ${hoverPane === i || collapsed || maximized ? 'show' : ''}`}>
+                {paneIds.length > 1 && (
+                  <button className="pc-btn pc-grip" title="Glisser sur un autre panneau pour l’y déplacer" draggable onDragStart={dragFrom(cfg.id)} onDragEnd={dragEnd}><GripIcon /></button>
+                )}
                 <button className="pc-btn" title="Monter le panneau" disabled={pos <= 0} onClick={() => moveIndicator(cfg.id, -1)}><ArrowIcon up /></button>
                 <button className="pc-btn" title="Descendre le panneau" disabled={pos < 0 || pos >= paneIds.length - 1} onClick={() => moveIndicator(cfg.id, 1)}><ArrowIcon /></button>
                 <button
@@ -400,11 +453,15 @@ function IndicatorOnMenu({ at, setAt, add }: {
   );
 }
 
+// a pane dragged by its title or grip (its indicator's id)
+const PANE_MIME = 'application/x-tesh-pane';
+
 const svg = { width: 14, height: 14, viewBox: '0 0 18 18', fill: 'none', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const };
 const BellIcon = () => <svg {...svg}><path d="M5 13V8.5a4 4 0 0 1 8 0V13l1.5 1.5h-11zM7.5 15.5a1.6 1.6 0 0 0 3 0" /></svg>;
 const EyeIcon = () => <svg {...svg}><path d="M1.5 9s2.7-5 7.5-5 7.5 5 7.5 5-2.7 5-7.5 5-7.5-5-7.5-5z" /><circle cx="9" cy="9" r="2.2" /></svg>;
 const EyeOffIcon = () => <svg {...svg}><path d="M1.5 9s2.7-5 7.5-5 7.5 5 7.5 5-2.7 5-7.5 5-7.5-5-7.5-5z" /><path d="M3 15L15 3" /></svg>;
 const TrashIcon = () => <svg {...svg}><path d="M3 5h12M7 5V3h4v2M5 5l.8 10h6.4L13 5" /></svg>;
+const GripIcon = () => <svg {...svg}><circle cx="6.5" cy="5" r="1" /><circle cx="11.5" cy="5" r="1" /><circle cx="6.5" cy="9" r="1" /><circle cx="11.5" cy="9" r="1" /><circle cx="6.5" cy="13" r="1" /><circle cx="11.5" cy="13" r="1" /></svg>;
 const ArrowIcon = ({ up }: { up?: boolean }) => <svg {...svg}>{up ? <path d="M9 14V4M5 8l4-4 4 4" /> : <path d="M9 4v10M5 10l4 4 4-4" />}</svg>;
 const CollapseIcon = () => <svg {...svg}><path d="M4 7l5 5 5-5" /></svg>;
 const ExpandIcon = () => <svg {...svg}><path d="M4 11l5-5 5 5" /></svg>;

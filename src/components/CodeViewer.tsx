@@ -1,44 +1,16 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useState } from 'react';
 import { useChartUi } from '../store/chartUi';
 import { getIndicatorDef } from '../indicators/registry';
-import { useStore } from '../store/store';
+import { useStore, nextId } from '../store/store';
 import { indicatorSources } from '../indicators/sources';
-
-type Lang = 'pine' | 'ts';
-
-const KEYWORDS: Record<Lang, RegExp> = {
-  pine: /^(if|else|for|to|while|var|varip|and|or|not|true|false|na|switch|import|export|method|type)$/,
-  ts: /^(import|export|from|const|let|var|function|return|if|else|for|while|of|in|new|type|as|true|false|null|undefined|this|typeof|break|continue)$/,
-};
-const TOKEN = /(\/\/.*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|(#[0-9a-fA-F]{6,8}\b)|(\b\d+(?:\.\d+)?\b)|([A-Za-z_][\w.]*)/g;
-
-// minimal syntax coloring: comments, strings, colors, numbers, keywords, ta./math. calls
-function highlightLine(line: string, lang: Lang): ReactNode[] {
-  const out: ReactNode[] = [];
-  let last = 0;
-  for (const m of line.matchAll(TOKEN)) {
-    const i = m.index ?? 0;
-    if (i > last) out.push(line.slice(last, i));
-    const [text, comment, str, color, num, word] = m;
-    let cls = '';
-    if (comment) cls = 'tk-comment';
-    else if (str) cls = 'tk-string';
-    else if (color) cls = 'tk-color';
-    else if (num) cls = 'tk-number';
-    else if (word && KEYWORDS[lang].test(word)) cls = 'tk-keyword';
-    else if (word && /^(ta|math|input|color|plot|hline|indicator|strategy|str|array)(\.|$)/.test(word)) cls = 'tk-builtin';
-    out.push(cls ? <span key={i} className={cls}>{text}</span> : text);
-    last = i + text.length;
-  }
-  if (last < line.length) out.push(line.slice(last));
-  return out;
-}
+import { highlightLine, type CodeLang as Lang } from './codeHighlight';
 
 // read-only source panel opened by the "{}" button of an indicator, like TradingView's
 export default function CodeViewer() {
   const target = useChartUi((s) => s.codeFor);
   const openPineEditor = useChartUi((s) => s.openPineEditor);
   const pineScripts = useStore((s) => s.pineScripts);
+  const upsertPineScript = useStore((s) => s.upsertPineScript);
   const setCodeFor = useChartUi((s) => s.setCodeFor);
   const [tab, setTab] = useState<Lang>('pine');
   const [copied, setCopied] = useState(false);
@@ -58,6 +30,17 @@ export default function CodeViewer() {
   const code = (lang === 'pine' ? src.pine : src.ts) ?? '';
   const lines = code.replace(/\n$/, '').split('\n');
 
+  // a built-in indicator: its Pine version becomes a script of "Mes scripts" opened in the Pine
+  // editor (TradingView's "Créer une copie modifiable"); a copy not changed yet is opened again.
+  // Opened from the chart, the copy takes that indicator's place when first saved.
+  function editCopy() {
+    const source = src.pine!;
+    const known = pineScripts.find((x) => x.source === source);
+    const id = known?.id ?? nextId();
+    if (!known) upsertPineScript({ id, name: def?.label ?? type, source, updatedAt: Date.now() });
+    openPineEditor(id, target?.indicatorId);
+  }
+
   function copy() {
     void navigator.clipboard.writeText(code).then(() => {
       setCopied(true);
@@ -75,6 +58,9 @@ export default function CodeViewer() {
             {src.ts && <button className={`cv-tab ${lang === 'ts' ? 'active' : ''}`} onClick={() => setTab('ts')}>TypeScript (plateforme)</button>}
           </div>
           {script && <button className="pill-btn" onClick={() => openPineEditor(script.id)}>✎ Modifier</button>}
+          {!script && src.pine && (
+            <button className="pill-btn" title="Créer une copie modifiable dans Mes scripts (nom, calcul, couleurs…) et l’ouvrir dans l’éditeur Pine" onClick={editCopy}>✎ Modifier le code</button>
+          )}
           <button className="pill-btn" onClick={copy}>{copied ? 'Copié ✓' : 'Copier'}</button>
           <button className="remove-btn cv-close" onClick={() => setCodeFor(null)}>✕</button>
         </div>

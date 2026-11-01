@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useStore, nextId } from '../store/store';
 import { useChartUi } from '../store/chartUi';
 import { INDICATOR_LIST, getIndicatorDef, type IndicatorCategory, type IndicatorDef } from '../indicators/registry';
+import IndicatorsPanel from './IndicatorsPanel';
 
 const CATEGORIES: ('Tous' | IndicatorCategory)[] = ['Tous', 'Personnalises', 'Tendance', 'Oscillateurs', 'Volatilite', 'Volume'];
 const CAT_LABEL: Record<string, string> = {
@@ -25,7 +26,8 @@ export default function IndicatorMenu({ onClose }: { onClose: () => void }) {
   const [added, setAdded] = useState<string | null>(null);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    // Échap closes an indicator's settings opened from the left column first, then this window
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !document.querySelector('.idg-backdrop')) onClose(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
@@ -52,90 +54,94 @@ export default function IndicatorMenu({ onClose }: { onClose: () => void }) {
     setTimeout(() => setAdded((a) => (a === def.type ? null : a)), 1200);
   }
 
+  // like ProRealTime's window: the chart's templates and indicators on the left, the library on the right
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div className="symbol-search indicator-menu" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="ss-head">
-          <span className="ss-title">Indicateurs</span>
-          <button className="remove-btn" onClick={onClose}>✕</button>
-        </div>
-        <div className="ss-input-row">
-          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="5.5" /><path d="M12.2 12.2L16 16" /></svg>
-          <input autoFocus placeholder="Rechercher un indicateur" value={query} onChange={(e) => setQuery(e.target.value)} />
-        </div>
-        <div className="ss-filters">
-          {CATEGORIES.map((c) => (
-            <button key={c} className={`ss-chip ${cat === c ? 'active' : ''}`} onClick={() => setCat(c)}>{CAT_LABEL[c]}</button>
-          ))}
-        </div>
-        {cat === 'Personnalises' && (
-          <div className="ss-filters ind-kinds">
-            {([['all', 'Tout'], ['indicators', 'Indicateurs'], ['strategies', 'Stratégies']] as const).map(([k, label]) => (
-              <button key={k} className={`ss-chip ${kind === k ? 'active' : ''}`} onClick={() => setKind(k)}>{label}</button>
+        <IndicatorsPanel />
+        <div className="im-main">
+          <div className="ss-head">
+            <span className="ss-title">Indicateurs</span>
+            <button className="remove-btn" onClick={onClose}>✕</button>
+          </div>
+          <div className="ss-input-row">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="5.5" /><path d="M12.2 12.2L16 16" /></svg>
+            <input autoFocus placeholder="Rechercher un indicateur" value={query} onChange={(e) => setQuery(e.target.value)} />
+          </div>
+          <div className="ss-filters">
+            {CATEGORIES.map((c) => (
+              <button key={c} className={`ss-chip ${cat === c ? 'active' : ''}`} onClick={() => setCat(c)}>{CAT_LABEL[c]}</button>
             ))}
           </div>
-        )}
-        <div className="ss-list">
-          {showStrategies && strategyRows.map((s) => (
-            <div key={s.id} className="ss-item" onClick={() => addStrategy(s.id)}>
-              <span className="ind-menu-dot strategy" title="Stratégie">
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="M1.5 11l3.5-4 3 2.5 4.5-6" /><path d="M9.5 3.5h3v3" /></svg>
-              </span>
-              <span className="ind-menu-name">{s.name}</span>
-              <span className="ss-name">Stratégie {s.mode === 'assisted' ? '(création assistée)' : '(Pine Script)'}</span>
-              <button
-                className="pl-btn" title="Modifier dans l’éditeur de stratégie"
-                onClick={(e) => { e.stopPropagation(); setActiveStrategy(s.id); setBottomDock({ tab: 'editor' }); onClose(); }}
-              >✎</button>
-              <span className={`ss-add ${onChart === s.id ? 'done' : ''}`}>{onChart === s.id ? '✓' : '+'}</span>
-            </div>
-          ))}
-          {showIndicators && (cat === 'Tous' || cat === 'Personnalises') && (
-            <div className="ss-item pine-new" onClick={() => { onClose(); openPineEditor(); }}>
-              <span className="ind-menu-dot pine">{'{}'}</span>
-              <span className="ind-menu-name">Nouveau script Pine</span>
-              <span className="ss-name">Collez un indicateur TradingView (Pine Script v5)</span>
-              <span className="ss-type">éditeur</span>
-              <span className="ss-add">＋</span>
+          {cat === 'Personnalises' && (
+            <div className="ss-filters ind-kinds">
+              {([['all', 'Tout'], ['indicators', 'Indicateurs'], ['strategies', 'Stratégies']] as const).map(([k, label]) => (
+                <button key={k} className={`ss-chip ${kind === k ? 'active' : ''}`} onClick={() => setKind(k)}>{label}</button>
+              ))}
             </div>
           )}
-          {showIndicators && (cat === 'Tous' || cat === 'Personnalises') && pineScripts
-            .filter((s) => !query.trim() || s.name.toLowerCase().includes(query.trim().toLowerCase()))
-            .map((s) => {
-              const def = getIndicatorDef({ type: 'PINE', scriptId: s.id });
-              const count = indicators.filter((i) => i.type === 'PINE' && i.scriptId === s.id).length;
+          <div className="ss-list">
+            {showStrategies && strategyRows.map((s) => (
+              <div key={s.id} className="ss-item" onClick={() => addStrategy(s.id)}>
+                <span className="ind-menu-dot strategy" title="Stratégie">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="M1.5 11l3.5-4 3 2.5 4.5-6" /><path d="M9.5 3.5h3v3" /></svg>
+                </span>
+                <span className="ind-menu-name">{s.name}</span>
+                <span className="ss-name">Stratégie {s.mode === 'assisted' ? '(création assistée)' : '(Pine Script)'}</span>
+                <button
+                  className="pl-btn" title="Modifier dans l’éditeur de stratégie"
+                  onClick={(e) => { e.stopPropagation(); setActiveStrategy(s.id); setBottomDock({ tab: 'editor' }); onClose(); }}
+                >✎</button>
+                <span className={`ss-add ${onChart === s.id ? 'done' : ''}`}>{onChart === s.id ? '✓' : '+'}</span>
+              </div>
+            ))}
+            {showIndicators && (cat === 'Tous' || cat === 'Personnalises') && (
+              <div className="ss-item pine-new" onClick={() => { onClose(); openPineEditor(); }}>
+                <span className="ind-menu-dot pine">{'{}'}</span>
+                <span className="ind-menu-name">Nouveau script Pine</span>
+                <span className="ss-name">Collez un indicateur TradingView (Pine Script v5)</span>
+                <span className="ss-type">éditeur</span>
+                <span className="ss-add">＋</span>
+              </div>
+            )}
+            {showIndicators && (cat === 'Tous' || cat === 'Personnalises') && pineScripts
+              .filter((s) => !query.trim() || s.name.toLowerCase().includes(query.trim().toLowerCase()))
+              .map((s) => {
+                const def = getIndicatorDef({ type: 'PINE', scriptId: s.id });
+                const count = indicators.filter((i) => i.type === 'PINE' && i.scriptId === s.id).length;
+                return (
+                  <div
+                    key={s.id} className="ss-item"
+                    onClick={() => {
+                      if (!def) { openPineEditor(s.id); onClose(); return; }
+                      addIndicator({ id: nextId(), type: 'PINE', scriptId: s.id, overlay: def.overlay, period: 0, color: def.defaults.color });
+                      setAdded(s.id);
+                      setTimeout(() => setAdded((a) => (a === s.id ? null : a)), 1200);
+                    }}
+                  >
+                    <span className="ind-menu-dot pine">{'{}'}</span>
+                    <span className="ind-menu-name">{s.name}</span>
+                    <span className="ss-name">{def ? 'Script Pine' : 'Script Pine avec erreur : cliquer pour corriger'}</span>
+                    <button className="pl-btn" title="Modifier dans l’éditeur" onClick={(e) => { e.stopPropagation(); onClose(); openPineEditor(s.id); }}>✎</button>
+                    <span className={`ss-add ${added === s.id ? 'done' : ''}`}>{added === s.id ? '✓' : count ? `+ (${count})` : '+'}</span>
+                  </div>
+                );
+              })}
+            {showIndicators && list.map((d) => {
+              const count = indicators.filter((i) => i.type === d.type).length;
               return (
-                <div
-                  key={s.id} className="ss-item"
-                  onClick={() => {
-                    if (!def) { openPineEditor(s.id); onClose(); return; }
-                    addIndicator({ id: nextId(), type: 'PINE', scriptId: s.id, overlay: def.overlay, period: 0, color: def.defaults.color });
-                    setAdded(s.id);
-                    setTimeout(() => setAdded((a) => (a === s.id ? null : a)), 1200);
-                  }}
-                >
-                  <span className="ind-menu-dot pine">{'{}'}</span>
-                  <span className="ind-menu-name">{s.name}</span>
-                  <span className="ss-name">{def ? 'Script Pine' : 'Script Pine avec erreur : cliquer pour corriger'}</span>
-                  <button className="pl-btn" title="Modifier dans l’éditeur" onClick={(e) => { e.stopPropagation(); onClose(); openPineEditor(s.id); }}>✎</button>
-                  <span className={`ss-add ${added === s.id ? 'done' : ''}`}>{added === s.id ? '✓' : count ? `+ (${count})` : '+'}</span>
+                <div key={d.type} className="ss-item" onClick={() => add(d)}>
+                  <span className="ind-menu-dot" style={{ background: d.defaults.color }} />
+                  <span className="ind-menu-name">{d.label}</span>
+                  <span className="ss-name">{d.description}</span>
+                  <span className="ss-type">{d.overlay ? 'sur le prix' : 'panneau'}</span>
+                  <span className={`ss-add ${added === d.type ? 'done' : ''}`}>{added === d.type ? '✓' : count ? `+ (${count})` : '+'}</span>
                 </div>
               );
             })}
-          {showIndicators && list.map((d) => {
-            const count = indicators.filter((i) => i.type === d.type).length;
-            return (
-              <div key={d.type} className="ss-item" onClick={() => add(d)}>
-                <span className="ind-menu-dot" style={{ background: d.defaults.color }} />
-                <span className="ind-menu-name">{d.label}</span>
-                <span className="ss-name">{d.description}</span>
-                <span className="ss-type">{d.overlay ? 'sur le prix' : 'panneau'}</span>
-                <span className={`ss-add ${added === d.type ? 'done' : ''}`}>{added === d.type ? '✓' : count ? `+ (${count})` : '+'}</span>
-              </div>
-            );
-          })}
+          </div>
+          <div className="ss-foot">Clique pour ajouter. Les panneaux se redimensionnent en glissant leur séparateur, et se réduisent / agrandissent avec les boutons en haut à droite de chaque panneau.</div>
         </div>
-        <div className="ss-foot">Clique pour ajouter. Les panneaux se redimensionnent en glissant leur séparateur, et se réduisent / agrandissent avec les boutons en haut à droite de chaque panneau.</div>
       </div>
     </div>
   );

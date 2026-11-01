@@ -6,6 +6,7 @@ import PanelControls from './PanelControls';
 import { useQuotes, type Quote } from '../data/feeds/quotes';
 import PresetPicker from './PresetPicker';
 import WatchlistColumnsMenu from './WatchlistColumnsMenu';
+import ListBackupsDialog from './ListBackupsDialog';
 import { SymbolLogo } from './SymbolLogo';
 import SymbolDetails from './SymbolDetails';
 import { formatVolume, pricePrecision } from './chartUtils';
@@ -91,6 +92,7 @@ export default function Watchlist() {
   const feedStatus = useChartUi((s) => s.feedStatus);
   const [showPresets, setShowPresets] = useState(false);
   const [showColumns, setShowColumns] = useState(false);
+  const [showBackups, setShowBackups] = useState(false);
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
   const dragKey = useRef<string | null>(null);
   const [dragOverKey, setDragOverKey] = useState<string | null>(null);
@@ -169,6 +171,7 @@ export default function Watchlist() {
             if (name) addWatchlistTab(name);
           }}>☰</button>
           <button className="ind-btn" title="Listes prédéfinies" onClick={() => setShowPresets(true)}>⊞</button>
+          <button className="ind-btn" title="Sauvegardes des listes et modèles (restaurer, exporter, importer)" onClick={() => setShowBackups(true)}>⟲</button>
           <button className="ind-btn" title="Colonnes et affichage" onClick={() => setShowColumns(true)}>⋯</button>
           <button
             className="ind-btn" title={side === 'right' ? 'Déplacer la liste à gauche du terminal' : 'Remettre la liste à droite'}
@@ -200,13 +203,22 @@ export default function Watchlist() {
           >
             {t.name}
             {watchlists.length > 1 && (
-              <span className="wl-tab-close" onClick={(e) => { e.stopPropagation(); removeWatchlistTab(t.id); }}>✕</span>
+              <span
+                className="wl-tab-close" title="Supprimer cette liste"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  // a whole list goes with one click: asked first (and kept in the day's backup)
+                  const n = t.items.filter((r) => r.kind === 'asset').length;
+                  if (window.confirm(`Supprimer la liste « ${t.name} » (${n} symbole${n > 1 ? 's' : ''}) ?`)) removeWatchlistTab(t.id);
+                }}
+              >✕</span>
             )}
           </button>
         ))}
       </div>
       {showPresets && <PresetPicker onClose={() => setShowPresets(false)} />}
       {showColumns && <WatchlistColumnsMenu onClose={() => setShowColumns(false)} />}
+      {showBackups && <ListBackupsDialog onClose={() => setShowBackups(false)} />}
 
       {settings.tableView && (
         <div className="wl-col-header">

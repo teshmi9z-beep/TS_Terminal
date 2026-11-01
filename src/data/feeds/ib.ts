@@ -37,6 +37,9 @@ const CONF: Record<string, IbConf> = {
   '1M': { step: 30 * DAY, span: '20 Y', spanSec: 20 * 365 * DAY, liveDur: '1 Y', daily: true },
 };
 
+// the duration of a chart's first page at this bar size
+export const ibSpan = (bar: string) => CONF[bar]?.span ?? null;
+
 export const IB_INTERVALS: [string, number][] = Object.entries(CONF)
   .filter(([k]) => !['1w', '1M'].includes(k))
   .map(([k, c]) => [k, c.step]);

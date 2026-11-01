@@ -7,6 +7,7 @@ import { bnFetch, bnStream, BadSymbolError } from './binance';
 import { yahooSpark } from './yahoo';
 import { ibQuotes } from './ib';
 import { estimatorFor } from './futuresEstimate';
+import { igMid, listenIg } from './ig';
 import type { FeedSource, MarketMeta } from './types';
 
 export type Quote = MarketMeta & { last: number; source: FeedSource; ts: number };
@@ -66,6 +67,8 @@ class QuoteManager {
   private ibSeen = new Map<string, number>();
   // the index futures estimated in real time while their prices are delayed (futuresEstimate.ts)
   private estOffs = new Map<string, () => void>();
+  // the IG markets (IG's own price, read through the IG relay)
+  private igOffs = new Map<string, () => void>();
 
   setWanted(symbols: Symbol[]) {
     this.wanted = symbols;
@@ -135,6 +138,16 @@ class QuoteManager {
         const last = est.active ? est.last() : null;
         const source = Date.now() - (this.ibSeen.get(t) ?? 0) < 30_000 ? 'ib' : 'yahoo';
         if (last != null) reportQuote(t, source, { last, estimated: true, exchange: 'Estimé en temps réel' });
+      }));
+    }
+
+    const igWanted = new Map(this.wanted.filter((s) => s.ig).map((s) => [s.ticker, s.ig!]));
+    for (const [t, off] of this.igOffs) if (!igWanted.has(t)) { off(); this.igOffs.delete(t); }
+    for (const [t, epic] of igWanted) {
+      if (this.igOffs.has(t)) continue;
+      this.igOffs.set(t, listenIg(epic, (q) => {
+        const last = igMid(q);
+        if (last != null) reportQuote(t, 'ig', { last, prevClose: q.change != null ? last - q.change : undefined, dayHigh: q.high ?? undefined, dayLow: q.low ?? undefined, exchange: 'IG' });
       }));
     }
 

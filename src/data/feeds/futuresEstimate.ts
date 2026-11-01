@@ -32,7 +32,6 @@ const CONF: Record<string, Conf> = {
   DE40: { market: 'eurex', tick: 1, proxies: [{ venue: 'bingx', id: 'NCSIGER2USD-USDT', weight: 1 }] },
   HK50: { market: 'hkfe', tick: 1, proxies: [{ venue: 'mexc', id: 'HK50_USDT', weight: 1 }] },
 };
-
 // local weekday (0 = Sunday) and minute of the day in a time zone
 function localTime(zone: string, t: number) {
   const local = t + zoneOffsetSec(zone, t);
@@ -101,7 +100,8 @@ function liveSocket(url: string, open: (s: WebSocket) => (() => void) | void, me
       stopOpen?.();
       if (closed) return;
       attempt++;
-      timer = setTimeout(connect, Math.min(15000, 500 * 2 ** Math.min(attempt, 5)));
+      // a source down for a while (MEXC since 2026-10-29) is tried again every 5 minutes, not every 15 s
+      timer = setTimeout(connect, attempt > 8 ? 300_000 : Math.min(15000, 500 * 2 ** Math.min(attempt, 5)));
     };
   };
   connect();
@@ -153,6 +153,8 @@ class ProxyFeed {
   private mid: { price: number; at: number } | null = null;
   private stops: (() => void)[] = [];
   private changed: () => void;
+  // its last hours asked (received or refused: a contract paused, a venue blocking the requests)
+  settled = false;
 
   constructor(p: Proxy, changed: () => void) {
     this.p = p;
@@ -160,7 +162,8 @@ class ProxyFeed {
   }
 
   start() {
-    this.history().catch(() => { /* the stream fills in */ });
+    this.settled = false;
+    this.history().catch(() => { /* the stream fills in */ }).finally(() => { this.settled = true; this.changed(); });
     const { venue, id } = this.p;
     if (venue === 'binance') {
       const s = id.toLowerCase();
@@ -275,6 +278,8 @@ export class FuturesEstimator {
   private real: Candle[] = [];
   private listeners = new Set<() => void>();
   private running = false;
+  // the delayed minutes asked once since the start
+  private polled = false;
   private pollTimer: ReturnType<typeof setTimeout> | undefined;
   private stopTimer: ReturnType<typeof setTimeout> | undefined;
   private notifyTimer: ReturnType<typeof setTimeout> | undefined;
@@ -298,14 +303,17 @@ export class FuturesEstimator {
     };
   }
 
-  // resolves once estimating, or after `ms`
+  // resolves once estimating, or once the delayed minutes and the perpetuals' last hours are in
+  // without an estimate, or after `ms`; at once while the market is closed (nothing to estimate)
   whenReady(ms: number): Promise<void> {
     return new Promise((resolve) => {
+      if (!MARKETS[this.conf.market].open(nowSec())) { resolve(); return; }
       let off = () => {};
       const done = () => { clearTimeout(timer); off(); resolve(); };
       const timer = setTimeout(done, ms);
-      off = this.listen(() => { if (this.active) done(); });
-      if (this.active) done();
+      const settled = () => this.active || (this.polled && this.proxies.every((p) => p.settled));
+      off = this.listen(() => { if (settled()) done(); });
+      if (settled()) done();
     });
   }
 
@@ -376,6 +384,7 @@ export class FuturesEstimator {
 
   private start() {
     this.running = true;
+    this.polled = false;
     for (const p of this.proxies) p.start();
     void this.poll();
   }
@@ -406,6 +415,7 @@ export class FuturesEstimator {
       try { bars = await yahoo1m(y); } catch { /* keep the last bars */ }
     }
     if (bars?.length) this.real = bars;
+    this.polled = true;
     this.notify();
     if (this.running) this.pollTimer = setTimeout(this.poll, 15_000);
   };
@@ -460,9 +470,12 @@ export class EstimatedSession implements FeedSession {
   set hasMore(v: boolean) { this.inner.hasMore = v; }
 
   async load(): Promise<Candle[]> {
+    // the estimator starts along with the history; not ready a moment after it, its minutes come
+    // with the live bars (subscribe) rather than hold the chart
+    const ready = this.est.whenReady(1500);
     const candles = await this.inner.load();
     this.newest = candles[candles.length - 1] ?? null;
-    await this.est.whenReady(5000);
+    await ready;
     const over = this.overlay();
     return over.length ? [...candles.slice(0, -1), ...over] : candles;
   }
