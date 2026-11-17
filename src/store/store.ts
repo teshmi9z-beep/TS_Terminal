@@ -3,12 +3,12 @@ import { persist, createJSONStorage } from 'zustand/middleware';
 import type { PineScript } from '../pine/compile';
 import type { YieldPeriod } from '../data/yields';
 import { defaultStrategies, type StrategyDoc } from '../strategy/doc';
-import type { AlertLogEntry, ChartSettings, Drawing, DrawingPreset, DrawTool, FibSettings, IndicatorConfig, IndicatorTemplate, PriceAlert, PriceScaleModeName, Profile, Symbol, TechAlert, Timeframe, UiTheme, WatchlistItem, WatchlistRow, WatchlistTab } from '../types';
+import type { AlertLogEntry, AvwapBand, ChartSettings, Drawing, DrawingPreset, DrawTool, FibSettings, IndicatorConfig, IndicatorTemplate, PriceAlert, PriceScaleModeName, Profile, Symbol, TechAlert, Timeframe, UiTheme, WatchlistItem, WatchlistRow, WatchlistTab } from '../types';
 import { dependentsOf, sourceKey, sourceRef } from '../indicators/derived';
 
 export const DEFAULT_TOOL_ORDER: DrawTool[] = [
   'cursor', 'trendline', 'extended_line', 'ray', 'horizontal_line', 'hline_right', 'hline_both', 'hline_left', 'rectangle', 'brush', 'text',
-  'fib_retracement', 'fib_extension', 'fixed_range', 'anchored_vp', 'position_3pt', 'position_rr', 'ruler', 'alert',
+  'fib_retracement', 'fib_extension', 'fixed_range', 'anchored_vp', 'anchored_vwap', 'position_3pt', 'position_rr', 'ruler', 'alert',
 ];
 import { DEFAULT_CHART_SETTINGS_DARK, DEFAULT_CHART_SETTINGS_LIGHT } from '../types';
 
@@ -175,9 +175,10 @@ export type RobotLegTag = { robotId: string; group: string; leg: 'A' | 'B' | 'C1
 
 // a robot of the lab trading the virtual account on live data; kind 'em': the Expected Move
 // robot (src/robots/emRule.ts, run by src/robots/emRunner.ts), 'dow': a Dow structure robot
-// (its indicator settings in `inputs`, run by src/robots/dowRunner.ts); their spec is unused
+// (its indicator settings in `inputs`, run by src/robots/dowRunner.ts), 'nb': a noise-band robot
+// (src/robots/noiseBand.ts, its settings in `inputs`, run by src/robots/nbRunner.ts); their spec is unused
 export type AutoRobot = {
-  id: string; name: string; symbol: Symbol; tf: Timeframe; kind?: 'em' | 'dow';
+  id: string; name: string; symbol: Symbol; tf: Timeframe; kind?: 'em' | 'dow' | 'nb';
   inputs?: Record<string, number | string | boolean>;
   spec: { signal: string; filter: string; stop: string; dir: number; tpR: number; trailK: number; cost: number };
   // % of the account risked by each of the 3 entries
@@ -1362,7 +1363,29 @@ export const useStore = create<Store>()(persist((set, get) => ({
         code: typeof d.code === 'string' ? d.code.replace(/initial_capital\s*=\s*100000\b/, 'initial_capital=10000') : d.code,
       }))
       : p.strategies ?? current.strategies;
-    const merged = { ...current, ...p, ...panels, chartLink, linkV: 2, backtestBars, paper, strategies, defaultsV: 2, indicatorTemplates: current.indicatorTemplates, profiles: current.profiles, timeZone, fibDefaults, fibV: 2, watchlists, activeWatchlistId, mainListVersion: 7, topBarOrder: order, homeTools, knownTools: ALL_TOOLS, toolOrder: [...new Set(tools)], compares: comparesOf(p as { compareSymbol?: Symbol | null }) };
+    // the anchored VWAP was an indicator from 2026-11-13 to 11-17, then a drawing tool like
+    // TradingView's: each one on the chart becomes a drawing at its anchor, with its bands
+    const oldAvwap = (p.indicators ?? []).filter((i) => (i.type as string) === 'AVWAP');
+    const avwapMoved = oldAvwap.length ? {
+      indicators: p.indicators!.filter((i) => (i.type as string) !== 'AVWAP'),
+      drawings: [...(p.drawings ?? []), ...oldAvwap.filter((i) => Number(i.inputs?.anchor) > 0).map((i): Drawing => {
+        const inp = i.inputs ?? {};
+        // (the bands' other fields come from the defaults: anchoredVwap.ts avwapOf)
+        const band = (k: number, on: boolean, mult: number) => ({
+          on: typeof inp[`band${k}`] === 'boolean' ? inp[`band${k}`] as boolean : on,
+          mult: typeof inp[`mult${k}`] === 'number' ? inp[`mult${k}`] as number : mult,
+        });
+        return {
+          id: `avwap_${i.id}`, tool: 'anchored_vwap', points: [{ time: Number(inp.anchor), price: 0 }], color: i.plotColors?.vwap ?? '#2962ff', lineWidth: 1, done: true,
+          ticker: p.symbol?.ticker,
+          avwap: {
+            mode: inp.bandMode === 'Pourcentage' ? 'percent' : 'stdev',
+            bands: [band(1, true, 1), band(2, false, 2), band(3, false, 3)] as AvwapBand[],
+          },
+        };
+      })],
+    } : {};
+    const merged = { ...current, ...p, ...avwapMoved, ...panels, chartLink, linkV: 2, backtestBars, paper, strategies, defaultsV: 2, indicatorTemplates: current.indicatorTemplates, profiles: current.profiles, timeZone, fibDefaults, fibV: 2, watchlists, activeWatchlistId, mainListVersion: 7, topBarOrder: order, homeTools, knownTools: ALL_TOOLS, toolOrder: [...new Set(tools)], compares: comparesOf(p as { compareSymbol?: Symbol | null }) };
     // a detached window opens in the main window's theme (a saved workspace may hold the other one)
     const theme = POPOUT_ID ? mainTheme() : null;
     const themed = theme && theme !== merged.uiTheme ? { ...merged, ...switchTheme(merged, theme) } : merged;

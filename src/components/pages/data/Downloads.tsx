@@ -54,7 +54,8 @@ export function DownloadDialog({ ticker: initialTicker, tf: initialTf, onClose, 
     const t = text.trim().toUpperCase();
     return SYMBOLS.find((s) => s.ticker === t) ?? SYMBOLS.find((s) => `${s.ticker} · ${s.name}`.toUpperCase() === t) ?? null;
   }, [text]);
-  const plans = useMemo(() => (sym ? downloadPlans(sym) : []), [sym]);
+  // (the archives give days only: offered in 1 day)
+  const plans = useMemo(() => (sym ? downloadPlans(sym) : []).filter((p) => p.maxDays(tf) > 0), [sym, tf]);
   const plan = plans.find((p) => p.source === source) ?? plans[0] ?? null;
   const max = plan ? plan.maxDays(tf) : Infinity;
   const span = Math.min(days, max);
@@ -73,7 +74,7 @@ export function DownloadDialog({ ticker: initialTicker, tf: initialTf, onClose, 
     try {
       const r = await fetch('/api/data/download/start', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ticker: sym.ticker, market: MARKET_OF[sym.category], tf, days: span, coarser, plan: { source: plan.source, id: plan.id, label: plan.label, align: plan.align } }),
+        body: JSON.stringify({ ticker: sym.ticker, market: MARKET_OF[sym.category], tf, days: span, coarser, plan: { source: plan.source, id: plan.id, label: plan.label, align: plan.align, yahoo: plan.yahoo } }),
       });
       const j = await r.json().catch(() => ({})) as { error?: string };
       if (!r.ok) throw new Error(j.error ?? `serveur ${r.status}`);

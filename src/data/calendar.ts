@@ -1,8 +1,9 @@
 import { tvScan, num, str } from './tv';
 
 // Calendars of the "Calendrier" page.
-// - economic: ForexFactory's public weekly feed (current week only), relayed as /ffcal, for the
-//   events, forecast and previous values; the actual ones from TradingView's calendar (/tvcal);
+// - economic: ForexFactory's public weekly feed (current week only), kept by the server as /ffcal
+//   (scripts/ff-calendar.ts), for the events, forecast and previous values; the actual ones from
+//   TradingView's calendar (/tvcal), which also gives the other weeks, or this one when ForexFactory refuses;
 // - earnings / dividends / IPO: TradingView's screener, for any week.
 
 // ---------------------------------------------------------------- countries
@@ -75,10 +76,14 @@ let ecoCache: { at: number; events: EcoEvent[] } | null = null;
 
 // TradingView's calendar for the actual figures: each ForexFactory event takes the actual of the
 // TradingView event of its country at the same time (the closest title when there are several)
-type TvEco = { title: string; country: string; date: string; actual: number | null; unit?: string; scale?: string };
+type TvEco = { title: string; country: string; date: string; actual: number | null; previous?: number | null; unit?: string; scale?: string };
+// (the small words match anything: "BoJ Summary of Opinions" is not "Balance of Trade")
+const STOP = new Set(['of', 'the', 'and', 'for', 'to', 'in', 'on', 'by', 'at']);
 const words = (s: string) => new Set(s.toLowerCase().replace(/y\/y/g, 'yoy').replace(/m\/m/g, 'mom').replace(/q\/q/g, 'qoq').replace(/prelim\b/g, 'prel')
   .replace(/\bcpi\b/g, 'inflation').replace(/\bhicp\b/g, 'harmonised inflation')
-  .split(/[^a-z0-9]+/).filter((w) => w.length > 1));
+  .split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !STOP.has(w)));
+// a ForexFactory figure as a number ("2.98T" is 2.98e12, "0.6%" is 0.6)
+const ffNumber = (s: string) => { const m = s.match(/^(-?\d+(?:\.\d+)?)([KMBT]?)%?$/); return m ? +m[1] * (m[2] ? SCALE[m[2]] : 1) : null; };
 async function addActuals(events: (EcoEvent & { en: string })[]) {
   if (!events.length) return;
   const from = new Date((events[0].time - 3600) * 1000).toISOString(), to = new Date((events[events.length - 1].time + 3600) * 1000).toISOString();
@@ -88,16 +93,74 @@ async function addActuals(events: (EcoEvent & { en: string })[]) {
   const tv = ((await r.json()) as { result?: TvEco[] }).result ?? [];
   for (const e of events) {
     if (e.actual) continue;
-    const same = tv.filter((x) => x.actual != null && x.country === e.country.toUpperCase() && Math.abs(Date.parse(x.date) / 1000 - e.time) <= 120);
+    // a figure in % takes only a TradingView figure in % (the y/y change of M2, not its level),
+    // and the other way round; an auction's "yield|bid-to-cover" says nothing about it
+    const ref = e.forecast || e.previous;
+    const unitOk = (x: TvEco) => !ref || ref.includes('|') || /%$/.test(ref) === (x.unit === '%');
+    const same = tv.filter((x) => x.actual != null && unitOk(x) && x.country === e.country.toUpperCase() && Math.abs(Date.parse(x.date) / 1000 - e.time) <= 120);
     const mine = words(e.en);
     // the most words in common, then the fewest extra ones (CPI rather than the harmonised CPI)
     const score = (x: TvEco) => { const w = [...words(x.title)], hit = w.filter((t) => mine.has(t)).length; return hit ? hit * 10 - (w.length - hit) : 0; };
-    const best = same.length === 1 ? same[0] : same.map((x) => ({ x, s: score(x) })).filter((c) => c.s > 0).sort((a, b) => b.s - a.s)[0]?.x;
-    if (best) e.actual = `${best.actual}${best.unit === '%' ? '%' : best.scale ?? ''}`;
+    // at least one word in common, even alone at that time (the BoJ's summary of opinions is no
+    // trade balance); between equals, the previous figure closest to ForexFactory's (its current
+    // account is the seasonally adjusted one)
+    const prev = ffNumber(e.previous);
+    const gap = (x: TvEco) => (prev == null || x.previous == null ? Number.MAX_VALUE :Math.abs(x.previous * (x.scale ? SCALE[x.scale] ?? 1 : 1) - prev));
+    const best = same.map((x) => ({ x, s: score(x) })).filter((c) => c.s > 0).sort((a, b) => b.s - a.s || gap(a.x) - gap(b.x))[0]?.x;
+    if (best) e.actual = actualLike(best, ref);
   }
 }
 
-export async function fetchEconomic(): Promise<EcoEvent[]> {
+// TradingView's figure written like ForexFactory's: 19750 next to "16.8K" becomes "19.8K",
+// 1817.7B next to "2.98T" becomes "1.82T"
+const SCALE: Record<string, number> = { K: 1e3, M: 1e6, B: 1e9, T: 1e12 };
+function actualLike(x: TvEco, ref: string): string {
+  const v = x.actual as number;
+  if (x.unit === '%') return `${v}%`;
+  const m = ref.match(/^-?\d+(?:\.(\d+))?([KMBT])$/);
+  const from = x.scale ? SCALE[x.scale] : 1;
+  if (m && from && x.scale !== m[2]) {
+    const scaled = (v * from) / SCALE[m[2]];
+    if (Math.abs(scaled) >= 0.01) return `${scaled.toFixed(m[1]?.length ?? 0)}${m[2]}`;
+  }
+  return `${v}${x.scale ?? ''}`;
+}
+
+// the events of [from, to): ForexFactory's file when it covers that week (the current one), else
+// TradingView's calendar (any other week, or ForexFactory refusing: it allows few requests)
+export async function fetchEconomic(from: number, to: number): Promise<EcoEvent[]> {
+  let ffError: unknown = null;
+  const ff = await fetchForexFactory().catch((e) => { ffError = e; return null; });
+  if (ff?.length && ff.filter((e) => e.time >= from && e.time < to).length * 2 >= ff.length) return ff;
+  try {
+    return await fetchTradingView(from, to);
+  } catch (e) {
+    throw ffError ?? e;
+  }
+}
+
+const tvCache = new Map<string, { at: number; events: EcoEvent[] }>();
+const TV_IMPACT: Record<number, EcoEvent['impact']> = { [-1]: 'Low', 0: 'Medium', 1: 'High' };
+type TvEvent = TvEco & { importance?: number; forecast: number | null; previous: number | null };
+async function fetchTradingView(from: number, to: number): Promise<EcoEvent[]> {
+  const key = `${from}|${to}`;
+  const hit = tvCache.get(key);
+  if (hit && Date.now() - hit.at < 3 * 60_000) return hit.events;
+  const iso = (t: number) => new Date(t * 1000).toISOString();
+  const countries = COUNTRIES.map((c) => c.code.toUpperCase()).join(',');
+  const r = await fetch(`/tvcal/events?from=${iso(from)}&to=${iso(to)}&countries=${countries}`);
+  if (!r.ok) throw new Error(`calendrier économique indisponible (${r.status})`);
+  const tv = ((await r.json()) as { result?: TvEvent[] }).result ?? [];
+  const value = (v: number | null, e: TvEvent) => (v == null ? '' : `${v}${e.unit === '%' ? '%' : e.scale ?? ''}`);
+  const events = tv.map((e): EcoEvent => ({
+    title: eventFr(e.title), country: e.country.toLowerCase(), category: categoryOf(e.title), time: Date.parse(e.date) / 1000,
+    impact: TV_IMPACT[e.importance ?? -1] ?? 'Low', forecast: value(e.forecast, e), previous: value(e.previous, e), actual: value(e.actual, e),
+  })).sort((a, b) => a.time - b.time);
+  tvCache.set(key, { at: Date.now(), events });
+  return events;
+}
+
+async function fetchForexFactory(): Promise<EcoEvent[]> {
   // a few minutes only: the actual figures come in as they are published
   if (ecoCache && Date.now() - ecoCache.at < 3 * 60_000) return ecoCache.events;
   const r = await fetch('/ffcal/ff_calendar_thisweek.json');

@@ -1,5 +1,6 @@
 import type { Candle, Symbol, Timeframe } from '../../types';
-import { feedChain, tradFiPerp, usShareId } from './resolve';
+import { feedChain, ibStockId, tradFiPerp, usShareId } from './resolve';
+import { IbDeeperSession } from './deeper';
 import { BinanceKlineSession, BinanceTickSession } from './binance';
 import { YahooDailySession, YahooSession } from './yahoo';
 import { SimSession } from './sim';
@@ -17,6 +18,11 @@ import { LOCALE } from '../../i18n/lang';
 
 export type { FeedSession, FeedSource, MarketMeta } from './types';
 
+// Yahoo's intervals -> the relay's IBKR bar names (none for 90m and quarters)
+const YAHOO_TO_IB: Record<string, string> = {
+  '1m': '1m', '2m': '2m', '5m': '5m', '15m': '15m', '30m': '30m', '60m': '1h', '1d': '1d', '1wk': '1w', '1mo': '1M',
+};
+
 // null when the source can't serve this timeframe (the next source in the chain is tried)
 function createSession(ref: FeedRef, sym: Symbol, tf: Timeframe): FeedSession | null {
   switch (ref.source) {
@@ -33,9 +39,13 @@ function createSession(ref: FeedRef, sym: Symbol, tf: Timeframe): FeedSession | 
       if (!p) return null;
       // a US share's intraday chart has its pre-market and after-hours bars too; the daily and weekly
       // bars are rebuilt from the hourly ones when Yahoo has lost them
-      const s = p.native === '1d' || p.native === '1wk'
+      const y = p.native === '1d' || p.native === '1wk'
         ? new YahooDailySession(ref.id, p.native)
         : new YahooSession(ref.id, p.native, !isDailyTf(tf) && usShareId(sym) === ref.id);
+      // a share's history older than Yahoo's from IBKR (its hours since about 2005, with the
+      // pre-market and after-hours bars too)
+      const ib = ibStockId(sym);
+      const s = ib && YAHOO_TO_IB[p.native] ? new IbDeeperSession(y, sym.ticker, ib, YAHOO_TO_IB[p.native]) : y;
       return p.aggregateTo ? new AggregatedSession(s, p.aggregateTo, true) : s;
     }
     case 'ib': {

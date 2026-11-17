@@ -22,10 +22,27 @@ function vpIcon(anchored: boolean): ReactNode {
     anchored && createElement('circle', { cx: 2.5, cy: 15.5, r: 1.8, fill: 'none', stroke: 'currentColor', strokeWidth: 1.2 }));
 }
 
+// an anchored VWAP: a curve from its anchor point, a band above and below it
+function avwapIcon(): ReactNode {
+  return createElement('svg', { width: 18, height: 18, viewBox: '0 0 18 18', 'aria-hidden': true },
+    createElement('path', { key: 'u', d: 'M4 8.5C8 5.5 11 3.5 17 3', fill: 'none', stroke: TONE_GREEN, strokeWidth: 1.1 }),
+    createElement('path', { key: 'l', d: 'M4 11.5C8 13 12 13.5 17 13', fill: 'none', stroke: TONE_GREEN, strokeWidth: 1.1 }),
+    createElement('path', { key: 'v', d: 'M4 10C8 9 11.5 8 17 8', fill: 'none', stroke: 'currentColor', strokeWidth: 1.6 }),
+    createElement('circle', { key: 'a', cx: 3, cy: 10, r: 2, fill: 'none', stroke: 'currentColor', strokeWidth: 1.3 }));
+}
+
 // the fixed colours of the multi-coloured icons, readable on the dark and the light theme
 const TONE_GREEN = '#089981', TONE_RED = '#f23645', TONE_BLUE = '#3d7bff', TONE_ORANGE = '#ff9800', TONE_AMBER = '#f0b90b';
 
 const svg = (...children: ReactNode[]) => createElement('svg', { width: 18, height: 18, viewBox: '0 0 18 18', 'aria-hidden': true }, ...children);
+
+// the mouse pointer, like TradingView's cursor tool
+function cursorIcon(): ReactNode {
+  return svg(createElement('path', {
+    key: 'p', d: 'M4.5 2.5v12.2l3.1-3 2.2 4.6 2-1-2.2-4.5h4.4z',
+    fill: 'none', stroke: 'currentColor', strokeWidth: 1.4, strokeLinejoin: 'round',
+  }));
+}
 
 // Fibonacci retracement: coloured levels across a dashed swing
 function fibIcon(): ReactNode {
@@ -73,7 +90,7 @@ function rulerIcon(): ReactNode {
 export type ToolTone = 'cursor' | 'line' | 'amber' | 'blue' | 'red' | 'green' | 'shape' | 'brush' | 'text' | 'fib' | 'volume' | 'position' | 'measure';
 
 export const TOOL_INFO: Record<DrawTool, { label: string; icon: ReactNode; tone: ToolTone }> = {
-  cursor: { label: 'Curseur', icon: '⭠', tone: 'cursor' },
+  cursor: { label: 'Curseur', icon: cursorIcon(), tone: 'cursor' },
   trendline: { label: 'Segment', icon: '╱', tone: 'line' },
   extended_line: { label: 'Segment prolongé', icon: '⟍', tone: 'line' },
   ray: { label: 'Rayon', icon: '↗', tone: 'line' },
@@ -89,6 +106,7 @@ export const TOOL_INFO: Record<DrawTool, { label: string; icon: ReactNode; tone:
   fib_extension: { label: 'Extension de Fibo', icon: fibExtIcon(), tone: 'fib' },
   fixed_range: { label: 'Gamme fixe : profil de volume entre deux bougies', icon: vpIcon(false), tone: 'volume' },
   anchored_vp: { label: 'Profil ancré : profil de volume d’une bougie jusqu’à la dernière', icon: vpIcon(true), tone: 'volume' },
+  anchored_vwap: { label: 'VWAP ancré', icon: avwapIcon(), tone: 'volume' },
   long_position: { label: 'Position longue', icon: positionIcon('long'), tone: 'position' },
   short_position: { label: 'Position courte', icon: positionIcon('short'), tone: 'position' },
   position_3pt: { label: 'Position : entrée, stop puis objectif (3 clics)', icon: positionIcon('3pt'), tone: 'position' },
@@ -115,6 +133,7 @@ export const DEFAULT_TOOL_COLOR: Partial<Record<DrawTool, string>> = {
   hline_both: '#f23645',
   hline_left: '#089981',
   text: '#e0e0e0',
+  anchored_vwap: '#2962ff',
   long_position: '#26a69a',
   short_position: '#ef5350',
   position_3pt: '#26a69a',

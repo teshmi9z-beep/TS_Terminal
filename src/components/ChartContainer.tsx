@@ -36,6 +36,7 @@ import { COMPANION_EVENT, setChartBackground, setChartSeries } from '../indicato
 import { lastSeriesPoint, markersOf, seriesData } from './indicatorSeries';
 import type { Candle, PriceScaleModeName } from '../types';
 import { LOCALE } from '../i18n/lang';
+import { HISTORY_NOTE, type HistoryNote } from '../data/feeds/deeper';
 
 const ts = (t: number) => t as UTCTimestamp;
 // strategy tester trades on the price series, like TradingView's order markers
@@ -345,14 +346,23 @@ export default function ChartContainer() {
     const chart = e.chart;
     if (span == null || !chart || !e.candles.length) return;
     pendingRangeRef.current = null;
+    const token = loadTokenRef.current;
+    // a page asked by the scroll may be on its way: wait for it, or the pages asked here
+    // would be skipped one after the other in no time
+    const older = async () => {
+      while (loadingOlderRef.current) await new Promise((r) => setTimeout(r, 30));
+      if (token === loadTokenRef.current) await loadOlder();
+    };
     if (span === 'all') {
-      for (let i = 0; i < 10 && sessionRef.current?.hasMore; i++) await loadOlder();
-      chart.timeScale().fitContent();
+      // (the Dow in days since 1896: some 25 pages)
+      for (let i = 0; i < 60 && sessionRef.current?.hasMore && token === loadTokenRef.current; i++) await older();
+      if (token === loadTokenRef.current) chart.timeScale().fitContent();
       return;
     }
     const lastT = e.candles[e.candles.length - 1].time;
     const from = span === 'ytd' ? Date.UTC(new Date().getUTCFullYear(), 0, 1) / 1000 : lastT - span;
-    for (let i = 0; i < 8 && e.candles[0].time > from && sessionRef.current?.hasMore; i++) await loadOlder();
+    for (let i = 0; i < 8 && e.candles[0].time > from && sessionRef.current?.hasMore && token === loadTokenRef.current; i++) await older();
+    if (token !== loadTokenRef.current) return;
     chart.timeScale().setVisibleRange({ from: ts(Math.max(from, e.candles[0].time)), to: ts(lastT) });
   }
 
@@ -497,7 +507,7 @@ export default function ChartContainer() {
         horzLine: { color: colors.crossLine, labelBackgroundColor: colors.crossLabel },
       },
       rightPriceScale: { borderColor: colors.border, scaleMargins: { top: 0.1, bottom: 0.08 } },
-      timeScale: { borderColor: colors.border, timeVisible: true, secondsVisible: false, rightOffset: 10, barSpacing: 8, minBarSpacing: 0.3 },
+      timeScale: { borderColor: colors.border, timeVisible: true, secondsVisible: false, rightOffset: 10, barSpacing: 8, minBarSpacing: 0.02 },
       width: el.clientWidth,
       height: el.clientHeight,
     });
@@ -687,6 +697,20 @@ export default function ChartContainer() {
     setSeriesGen((n) => n + 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [styleKey]);
+
+  // the older history coming from IBKR, or why it stops (feeds/deeper.ts): for this chart's share,
+  // forgotten on a symbol or timeframe change
+  const [history, setHistory] = useState<{ busy?: boolean; text?: string }>({});
+  useEffect(() => {
+    setHistory({});
+    const on = (e: Event) => {
+      const n = (e as CustomEvent<HistoryNote>).detail;
+      if (n.ticker !== useStore.getState().symbol.ticker) return;
+      setHistory((h) => (n.text ? { text: n.text } : n.busy ? { busy: true, text: h.text } : { text: h.text }));
+    };
+    window.addEventListener(HISTORY_NOTE, on);
+    return () => window.removeEventListener(HISTORY_NOTE, on);
+  }, [symbol.ticker, timeframe]);
 
   useEffect(() => {
     const onOnline = () => {
@@ -899,6 +923,15 @@ export default function ChartContainer() {
         <div className={`chart-banner chart-ui ${replayMode !== 'off' ? 'above-replay' : ''}`}>
           Données réelles indisponibles pour ce symbole / cette unité — affichage simulé
           {feedStatus.error && <small>{feedStatus.error}</small>}
+        </div>
+      )}
+      {!feedStatus.loading && history.busy && (
+        <div className={`chart-banner local history chart-ui ${replayMode !== 'off' ? 'above-replay' : ''}`}><span className="spinner" /> Historique plus ancien : Interactive Brokers…</div>
+      )}
+      {!feedStatus.loading && !history.busy && history.text && (
+        <div className={`chart-banner local history chart-ui ${replayMode !== 'off' ? 'above-replay' : ''}`} title={history.text}>
+          {history.text}
+          <button className="chart-banner-close" onClick={() => setHistory({})} title="Fermer">×</button>
         </div>
       )}
       {!feedStatus.loading && feedStatus.source === 'local' && (

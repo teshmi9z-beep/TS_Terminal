@@ -5,6 +5,7 @@ import { openFeed } from '../data/feeds';
 import { Features, toBars } from './features';
 import { FILTERS, SIGNALS, STOPS, barsNeeded } from './catalog';
 import { EmRobotRun } from './emRunner';
+import { NbRobotRun } from './nbRunner';
 import { DowRobotRun } from './dowRunner';
 
 // Automatic mode: each enabled robot follows its market and timeframe live and
@@ -150,7 +151,7 @@ function notify(text: string) {
 
 // ---------------------------------------------------------------- manager
 
-const runs = new Map<string, RobotRun | EmRobotRun | DowRobotRun>();
+const runs = new Map<string, RobotRun | EmRobotRun | DowRobotRun | NbRobotRun>();
 const listeners = new Set<() => void>();
 function publish() { for (const l of listeners) l(); }
 
@@ -172,8 +173,8 @@ export function syncAutoRobots(list: AutoRobot[]) {
   }
   for (const [id, r] of wanted) {
     if (runs.has(id)) continue;
-    // the Expected Move and Dow structure robots have their own runners
-    const run = r.kind === 'em' ? new EmRobotRun(r, publish, notify) : r.kind === 'dow' ? new DowRobotRun(r, publish, notify) : new RobotRun(r);
+    // the Expected Move, Dow structure and noise-band robots have their own runners
+    const run = r.kind === 'em' ? new EmRobotRun(r, publish, notify) : r.kind === 'nb' ? new NbRobotRun(r, publish, notify) : r.kind === 'dow' ? new DowRobotRun(r, publish, notify) : new RobotRun(r);
     runs.set(id, run);
     void run.start();
   }

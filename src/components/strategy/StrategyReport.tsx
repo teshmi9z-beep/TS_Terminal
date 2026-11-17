@@ -493,6 +493,8 @@ export default function StrategyReport() {
         <div className="rp-open">
           {robot.type === 'DOW_STRUCTURE'
             ? 'Robot Structure Dow : 1 entrée par configuration, 0,3 % du capital risqué, stop au-delà de la boîte ou de la mèche, sortie au retournement de structure ; capital de départ 10 000 €, frais compris.'
+            : robot.type === 'NOISE_BAND'
+            ? 'Robot Bande de bruit (non prouvé) : 2 entrées par signal, 0,3 % du capital risqué par entrée, stop à 2 fois le mouvement habituel d’une séance, A sort à son objectif, B à la fin de la séance ; capital de départ 10 000 €, frais serrés compris.'
             : robot.type === 'EXPECTED_MOVE'
             ? 'Robot Expected Move (non prouvé) : 1 entrée par signal, 0,3 % du capital risqué, stop 20 % de l’EM, objectif 3 R ou sortie à la clôture cash, seulement quand le VIX est à 20 ou plus ; capital de départ 10 000 €, frais d’un future CME compris.'
             : 'Robot du labo : 3 entrées par signal (fixe, suiveur, paliers 1-2-3 R), 0,3 % du capital risqué par entrée, capital de départ 10 000 €, frais compris.'}

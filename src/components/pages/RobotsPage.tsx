@@ -10,7 +10,9 @@ import { LineChart } from './options/ui';
 import HourStudyCard from './HourStudyCard';
 import DowStudyCard from './DowStudyCard';
 import EmRobotCard from './EmRobotCard';
+import NbRobotCard from './NbRobotCard';
 import FluxStudyCard from './FluxStudyCard';
+import FluxGridCard from './FluxGridCard';
 import type { Stats } from '../../robots/engine';
 import { REAL_COSTS_FROM, type GeneralSetting, type RobotReport, type RobotStrategy } from '../../robots/report';
 import type { IndicatorConfig } from '../../types';
@@ -87,10 +89,10 @@ function AutoToggle({ s }: { s: RobotStrategy }) {
   const toggle = () => {
     const st = useStore.getState();
     if (robot) { st.upsertAutoRobot({ ...robot, enabled: !robot.enabled }); return; }
-    const future = s.kind === 'em' ? SYMBOLS.find((x) => x.ticker === s.future) : undefined;
+    const future = s.kind === 'em' || s.kind === 'nb' ? SYMBOLS.find((x) => x.ticker === s.future) : undefined;
     st.upsertAutoRobot({
       id: s.id, name: s.name, symbol: future ?? toPlatform(s), tf: platformTf(s.tf), riskPct: 0.3, enabled: true, createdAt: Date.now(),
-      ...(s.kind === 'em' ? { kind: 'em' as const } : s.kind === 'dow' ? { kind: 'dow' as const, inputs: s.inputs } : {}),
+      ...(s.kind === 'em' ? { kind: 'em' as const } : s.kind === 'nb' ? { kind: 'nb' as const, inputs: s.inputs } : s.kind === 'dow' ? { kind: 'dow' as const, inputs: s.inputs } : {}),
       spec: { signal: s.signal.id, filter: s.filter.id, stop: s.stop.id, dir: s.dir, tpR: s.legs.tpR, trailK: s.legs.trailK, cost: s.cost },
     });
   };
@@ -139,7 +141,7 @@ function Report({ s }: { s: RobotStrategy }) {
   const best = s.money.find((m) => m.mm === s.bestMM) ?? fixed;
   const legNames = [`A · fixe (objectif ${String(s.legs.tpR).replace('.', DEC)} R)`, `B · suiveur (stop ${s.legs.trailK} ATR, objectif +1 R à chaque palier)`, 'C · paliers 1 R / 2 R / 3 R avec break-even'];
   // the indicators it reads (entry signal, filter), set as the robot uses them
-  const em = s.kind === 'em', dow = s.kind === 'dow', single = em || dow;
+  const em = s.kind === 'em', dow = s.kind === 'dow', nb = s.kind === 'nb', single = em || dow || nb;
   const parts = single ? [] : robotParts({ id: s.id, signal: s.signal.id, filter: s.filter.id });
   // a chart tab of its own: the robot's market and timeframe with the robot and its
   // indicators on it, and the strategy tester replaying it on the report's history (the
@@ -147,7 +149,7 @@ function Report({ s }: { s: RobotStrategy }) {
   const open = () => {
     const st = useStore.getState();
     st.setBottomDock({ tab: 'tester' });
-    const mine = (i: IndicatorConfig) => (i.type === 'ROBOT' || i.type === 'EXPECTED_MOVE' || i.type === 'DOW_STRUCTURE') && i.robot?.id === s.id;
+    const mine = (i: IndicatorConfig) => (i.type === 'ROBOT' || i.type === 'EXPECTED_MOVE' || i.type === 'DOW_STRUCTURE' || i.type === 'NOISE_BAND') && i.robot?.id === s.id;
     const tab = st.tabs.find((t) => t.kind === 'chart' && t.state?.indicators?.some(mine));
     if (tab) {
       activateTab(tab.id);
@@ -171,6 +173,15 @@ function Report({ s }: { s: RobotStrategy }) {
         robot: { ...origin, dataset: s.dataset ?? origin.dataset },
       };
       openChartTab(sym, platformTf(s.tf), [emCfg], { testerRobot: emCfg.id });
+      return;
+    }
+    // a noise-band robot: the indicator set as the robot, the tester on the lab's history
+    if (nb) {
+      const nbCfg: IndicatorConfig = {
+        id: nextId(), type: 'NOISE_BAND', period: 0, color: '#ff9800', overlay: true, visible: true, inputs: s.inputs,
+        robot: { ...origin, dataset: s.dataset ?? origin.dataset },
+      };
+      openChartTab(sym, platformTf(s.tf), [nbCfg], { testerRobot: nbCfg.id });
       return;
     }
     // a Dow structure robot: the indicator set as the robot, the tester on the lab's history
@@ -203,6 +214,7 @@ function Report({ s }: { s: RobotStrategy }) {
             <span>{day(s.period.from)} → {day(s.period.to)}</span>
             {s.years < 1 && <span className="rb-short" title="Moins d’un an d’historique : résultats à confirmer sur une plus longue période">Historique court ({Math.max(1, Math.round(s.years * 12))} mois)</span>}
             {em && <span className="rb-short" title="La seule règle de l’étude Expected Move qui tient un peu : +0,06 R par trade sur 5 indices, en baisse depuis 2023, pas significative sur la validation">Non prouvé</span>}
+            {nb && <span className="rb-short" title="Le seul candidat de l’étude price action du 11 novembre : +0,03 R par trade au pas à pas depuis 2022, seulement avec des frais serrés ; les 4 marchés sont choisis après coup">Non prouvé</span>}
           </div>
         </div>
         <div className="rb-actions">
@@ -216,17 +228,20 @@ function Report({ s }: { s: RobotStrategy }) {
         <div><b>Filtre</b>{s.filter.label}</div>
         <div><b>Stop</b>{s.stop.label}</div>
         {em && <div><b>Sur le graphique</b>Expected Move calibré, avec les niveaux du robot, ses flèches, ses stops et ses objectifs ; le testeur rejoue tous ses trades depuis 2020</div>}
+        {nb && <div><b>Sur le graphique</b>Bande de bruit, avec les flèches du robot, son stop et son objectif ; le testeur rejoue tous ses trades depuis 2020</div>}
         {dow && <div><b>Sur le graphique</b>Structure de marché (Dow) réglée comme le robot : sommets, cassures, boîtes, entrées et sorties ; le testeur rejoue tous ses trades depuis 2020</div>}
         {parts.length > 0 && (
           <div><b>Sur le graphique</b>{parts.map((p) => `${p.label} (${ROLE_LABEL[p.role]}${p.role === 'filter' && p.cfg.type === 'STOCH_ENV' ? ', lignes pâles' : ''})`).join(' · ')}</div>
         )}
         <div><b>Sorties</b>{em
           ? `1 entrée de 0,3 % par signal : objectif ${s.legs.tpR} R, sinon sortie à la clôture cash · en automatique, le future ${s.future}`
+          : nb
+          ? `2 entrées de 0,3 % par signal : A sort à son objectif, B à la fin de la séance · une fois par séance · en automatique sur ${s.future}`
           : dow
           ? '1 entrée de 0,3 % par configuration : sortie au stop ou au retournement de structure · en automatique, un ordre limite au bord de la boîte'
           : '3 entrées de 0,3 % par signal : fixe · suiveur · paliers 1-2-3 R avec break-even ; signal contraire = clôture et retournement'}</div>
         <div><b>Frais</b>{pct(s.cost * 100, 3)} du prix par côté (commission + écart + glissement)</div>
-        <div><b>Robustesse</b>{s.robustText ?? <>{s.robust.passed} réglages voisins sur {s.robust.total} ({em ? 'autres stops, objectifs, calibrage et seuil du VIX) gagnent aussi en réglage et en validation' : 'autres stops et sorties) remplissent aussi les critères'}{s.alsoOn.length ? ` · validé aussi sur ${s.alsoOn.slice(0, 8).join(', ')}${s.alsoOn.length > 8 ? '…' : ''}` : ''}</>}</div>
+        <div><b>Robustesse</b>{s.robustText ?? <>{s.robust.passed} réglages voisins sur {s.robust.total} ({em ? 'autres stops, objectifs, calibrage et seuil du VIX) gagnent aussi en réglage et en validation' : nb ? 'autres largeurs de bande, séances de référence, stops et objectifs) gagnent aussi en réglage et en validation' : 'autres stops et sorties) remplissent aussi les critères'}{s.alsoOn.length ? ` · validé aussi sur ${s.alsoOn.slice(0, 8).join(', ')}${s.alsoOn.length > 8 ? '…' : ''}` : ''}</>}</div>
       </div>
 
       <div className="rb-kpis">
@@ -235,7 +250,7 @@ function Report({ s }: { s: RobotStrategy }) {
         <Kpi label="Ratio gains/pertes" value={n2(s.stats.full.ratio)} sub="gain moyen / perte moyenne" good={s.stats.full.ratio > 1.3} />
         <Kpi label="Profit factor" value={n2(s.stats.full.profitFactor)} />
         <Kpi label="Drawdown max" value={pct(fixed.maxDDPct)} sub="du capital" />
-        <Kpi label="Signaux" value={String(s.stats.full.groups)} sub={single ? '1 trade par signal' : `${s.stats.full.trades} trades (3 par signal)`} />
+        <Kpi label="Signaux" value={String(s.stats.full.groups)} sub={nb ? `${s.stats.full.trades} trades (2 par signal)` : single ? '1 trade par signal' : `${s.stats.full.trades} trades (3 par signal)`} />
       </div>
 
       <div className="rb-card">
@@ -253,8 +268,8 @@ function Report({ s }: { s: RobotStrategy }) {
         <table className="rb-table">
           <thead>{STATS_HEAD}</thead>
           <tbody>
-            <StatsRow label="Réglage" note={em ? `(juillet 2020 → ${day(s.period.split)}, où la règle a été choisie)` : `(70 %, jusqu’au ${day(s.period.split)})`} s={s.stats.is} />
-            <StatsRow label="Validation" note={em ? '(depuis, jamais utilisée pour choisir)' : '(30 % jamais utilisés pour choisir)'} s={s.stats.oos} />
+            <StatsRow label="Réglage" note={em ? `(juillet 2020 → ${day(s.period.split)}, où la règle a été choisie)` : nb ? `(2020 → ${day(s.period.split)})` : `(70 %, jusqu’au ${day(s.period.split)})`} s={s.stats.is} />
+            <StatsRow label="Validation" note={em ? '(depuis, jamais utilisée pour choisir)' : nb ? '(depuis ; le stop et les marchés ont été choisis en la voyant)' : '(30 % jamais utilisés pour choisir)'} s={s.stats.oos} />
             <StatsRow label="Total" s={s.stats.full} />
           </tbody>
         </table>
@@ -358,7 +373,7 @@ export default function RobotsPage() {
   const [showMarkets, setShowMarkets] = useState(false);
   // which selection: the best robots of every indicator, the Stoch Price Envelope range / trend
   // ones, the hour range (its study, and its robots when some pass), or the Dow structure study
-  const [view, setView] = useKept<'main' | 'spe' | 'hr' | 'dow' | 'em' | 'flux' | null>('view', null);
+  const [view, setView] = useKept<'main' | 'spe' | 'hr' | 'dow' | 'em' | 'nb' | 'flux' | 'grid' | null>('view', null);
   const listRef = useRef<HTMLElement>(null);
   const mainRef = useRef<HTMLElement>(null);
 
@@ -368,11 +383,13 @@ export default function RobotsPage() {
     const em = fetch(`/robots/em.json?t=${Date.now()}`).then((r) => (r.ok ? r.json() as Promise<{ strategies: RobotStrategy[] }> : null)).catch(() => null);
     // and the Dow structure robots from theirs (public/robots/dow-robots.json)
     const dow = fetch(`/robots/dow-robots.json?t=${Date.now()}`).then((r) => (r.ok ? r.json() as Promise<{ strategies: RobotStrategy[] }> : null)).catch(() => null);
+    // the noise-band robots from the price-action study (public/robots/nb.json)
+    const nb = fetch(`/robots/nb.json?t=${Date.now()}`).then((r) => (r.ok ? r.json() as Promise<{ strategies: RobotStrategy[] }> : null)).catch(() => null);
     fetch(`/robots/report.json?t=${Date.now()}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then(async (j: RobotReport) => {
-        const [e, d] = await Promise.all([em, dow]);
-        const merged = { ...j, strategies: [...j.strategies.filter((x) => x.set !== 'em' && x.set !== 'dow'), ...(d?.strategies ?? []), ...(e?.strategies ?? [])] };
+        const [e, d, b] = await Promise.all([em, dow, nb]);
+        const merged = { ...j, strategies: [...j.strategies.filter((x) => x.set !== 'em' && x.set !== 'dow' && x.set !== 'nb'), ...(d?.strategies ?? []), ...(e?.strategies ?? []), ...(b?.strategies ?? [])] };
         lastReport = merged;
         if (alive) setReport(merged);
       })
@@ -393,8 +410,11 @@ export default function RobotsPage() {
   const hrCount = report?.strategies.filter((s) => s.set === 'hr').length ?? 0;
   const emCount = report?.strategies.filter((s) => s.set === 'em').length ?? 0;
   const dowCount = report?.strategies.filter((s) => s.set === 'dow').length ?? 0;
+  const nbCount = report?.strategies.filter((s) => s.set === 'nb').length ?? 0;
   // the Stoch Price Envelope selection first when there is one
   const shown = view ?? (speCount ? 'spe' : 'main');
+  // an idea tested in full with no robot kept: the study is the whole page
+  const study = shown === 'flux' || shown === 'grid';
   const list = useMemo(() => {
     const xs = (report?.strategies ?? []).filter((s) => (s.set ?? 'main') === shown && (market === 'all' || s.market === market));
     const key = (s: RobotStrategy) => sort === 'annual' ? -s.annualPct : sort === 'profit' ? -s.money[0].netPct : sort === 'winRate' ? -s.stats.full.winRate
@@ -404,14 +424,16 @@ export default function RobotsPage() {
 
   if (error) return <div className="rb-page"><div className="rb-empty">{error}</div></div>;
   if (!report) return <div className="rb-page"><div className="rb-empty">Chargement des rapports…</div></div>;
-  const mainCount = report.strategies.length - speCount - hrCount - emCount - dowCount;
+  const mainCount = report.strategies.length - speCount - hrCount - emCount - dowCount - nbCount;
   // a year of history or more first; shorter ones saw a single market phase
   // the Stoch Price Envelope selection: settings validated on several markets first
   const groups: [string, RobotStrategy[]][] = shown === 'dow' ? [
     ['Retenus au walk-forward (réglage refait chaque année)', list],
+  ] : shown === 'nb' ? [
+    ['Non prouvés · la règle de l’étude, un robot par marché', list],
   ] : shown === 'em' ? [
     ['Non prouvés · la règle de l’étude, un robot par indice', list],
-  ] : shown === 'flux' ? [
+  ] : shown === 'flux' || shown === 'grid' ? [
   ] : shown === 'hr' ? [
     ['Validés sur plusieurs marchés à la fois', list.filter((s) => s.general)],
     ['Un seul marché · à confirmer', list.filter((s) => !s.general)],
@@ -426,38 +448,57 @@ export default function RobotsPage() {
   const current = list.find((s) => s.id === sel) ?? groups.flatMap(([, g]) => g)[0];
   const markets = [...new Set(report.strategies.map((s) => s.market))];
   const c = report.criteria;
+  // the menu: one line per selection, its count or verdict under it
+  type View = NonNullable<typeof view>;
+  const setBtn = (id: View, name: string, sub: string, title?: string) => (
+    <button key={id} className={shown === id ? 'on' : ''} onClick={() => setView(id)} title={title}>
+      <span>{name}</span><small>{sub}</small>
+    </button>
+  );
+  const robots = (k: number) => `${k} robot${k > 1 ? 's' : ''}`;
 
   return (
     <div className="rb-page">
       <div className="rb-top">
         <h1>Robots de trading</h1>
-        <div className="rb-summary">
-          {report.tested.toLocaleString(LOCALE)} stratégies testées sur {report.datasets.length} marchés et unités de temps ·
-          {' '}{report.candidates.toLocaleString(LOCALE)} validées · {mainCount} gardées (les plus rentables){speCount ? ` + ${speCount} Stoch Price Envelope range / tendance` : ''} ·
-          {' '}mis à jour le {dayTime(report.generatedAt / 1000)}
-        </div>
-        <div className="rb-criteria">
-          <span>Trades gagnants &gt; {c.winRate} %</span>
-          <span>Ratio gains/pertes &gt; {String(c.ratio).replace('.', DEC)}</span>
-          <span>3 entrées × {String(c.riskPerEntryPct).replace('.', DEC)} % par signal</span>
-          <span>Capital {c.capital.toLocaleString(LOCALE)} €</span>
-          {!!c.from && <span>Marché depuis le {day(c.from)} seulement</span>}
-          <span>Réglage sur {Math.round(c.split * 100)} % de l’historique, validation sur le reste</span>
-          <span>Au moins {c.minTradesIS} trades en réglage et {c.minTradesOOS} en validation</span>
-        </div>
+        {study ? (
+          <div className="rb-summary">Une idée testée en entier depuis 2020, aux frais réels : aucun réglage n’a tenu, donc pas de robot à lancer. Tout le test est ici.</div>
+        ) : (
+          <>
+            <div className="rb-summary">
+              {report.tested.toLocaleString(LOCALE)} stratégies testées sur {report.datasets.length} marchés et unités de temps ·
+              {' '}{report.candidates.toLocaleString(LOCALE)} validées · {mainCount} gardées (les plus rentables){speCount ? ` + ${speCount} Stoch Price Envelope range / tendance` : ''} ·
+              {' '}mis à jour le {dayTime(report.generatedAt / 1000)}
+            </div>
+            <div className="rb-criteria">
+              <span>Trades gagnants &gt; {c.winRate} %</span>
+              <span>Ratio gains/pertes &gt; {String(c.ratio).replace('.', DEC)}</span>
+              <span>3 entrées × {String(c.riskPerEntryPct).replace('.', DEC)} % par signal</span>
+              <span>Capital {c.capital.toLocaleString(LOCALE)} €</span>
+              {!!c.from && <span>Marché depuis le {day(c.from)} seulement</span>}
+              <span>Réglage sur {Math.round(c.split * 100)} % de l’historique, validation sur le reste</span>
+              <span>Au moins {c.minTradesIS} trades en réglage et {c.minTradesOOS} en validation</span>
+            </div>
+          </>
+        )}
       </div>
 
       <div className="rb-body">
         <aside className="rb-list" ref={listRef}>
           <div className="rb-sets">
-            {speCount > 0 && <button className={shown === 'spe' ? 'on' : ''} onClick={() => setView('spe')} title="Range détecté sur une unité supérieure, tendance en escalier sur l’unité du robot">Stoch Price Envelope · range / tendance ({speCount})</button>}
-            <button className={shown === 'hr' ? 'on' : ''} onClick={() => setView('hr')} title="La bougie d’une heure (heure de Paris) fait un range, la clôture hors du range donne le sens de la journée">Range horaire · cassure de la bougie d’une heure ({hrCount})</button>
-            <button className={shown === 'main' ? 'on' : ''} onClick={() => setView('main')}>Meilleurs robots, tous indicateurs ({mainCount})</button>
-            <button className={shown === 'dow' ? 'on' : ''} onClick={() => setView('dow')} title="Plus hauts / plus bas, cassure en clôture franche, retour dans la boîte, liquidité : l’étude de l’indicateur Structure de marché (Dow)">Structure Dow · price action ({dowCount})</button>
-            <button className={shown === 'em' ? 'on' : ''} onClick={() => setView('em')} title="L’indicateur Expected Move calibré transformé en robot sur les indices : la seule règle qui tient un peu (non prouvée)">Expected Move · indices · non prouvé ({emCount})</button>
-            <button className={shown === 'flux' ? 'on' : ''} onClick={() => setView('flux')} title="Toujours dans le sens du flux MM20 / MM50, entrée sur un retour sur le nuage, un Fibonacci, un order block ou une imbalance : l’étude du 29 octobre">Flux MM20 / MM50 · étude, aucun robot gardé</button>
+            <div className="rb-sets-title">Robots gardés</div>
+            {speCount > 0 && setBtn('spe', 'Stoch Price Envelope · range / tendance', robots(speCount), 'Range détecté sur une unité supérieure, tendance en escalier sur l’unité du robot')}
+            {setBtn('main', 'Meilleurs robots, tous indicateurs', robots(mainCount))}
+            {setBtn('dow', 'Structure Dow · price action', robots(dowCount), 'Plus hauts / plus bas, cassure en clôture franche, retour dans la boîte, liquidité : l’étude de l’indicateur Structure de marché (Dow)')}
+            {setBtn('em', 'Expected Move · indices', `${robots(emCount)} · non prouvé`, 'L’indicateur Expected Move calibré transformé en robot sur les indices : la seule règle qui tient un peu (non prouvée)')}
+            {nbCount > 0 && setBtn('nb', 'Bande de bruit · momentum intraday', `${robots(nbCount)} · non prouvé`, 'Étude price action du 11 novembre : une clôture hors de l’écart habituel à l’ouverture, suivie jusqu’à la fin de séance (Nasdaq, S&P 500, or, USDJPY)')}
+            {hrCount > 0 && setBtn('hr', 'Range horaire · bougie d’une heure', robots(hrCount), 'La bougie d’une heure (heure de Paris) fait un range, la clôture hors du range donne le sens de la journée')}
+            <div className="rb-sets-title">Études · aucun robot rentable</div>
+            {setBtn('grid', 'Grille sur le flux · 5 / 15 min', 'Ta règle martingale, testée le 3 novembre', 'Flux 1 h pour le sens, grille d’ordres jusqu’à la MM20, garde-fous sur les gros niveaux et les grandes mèches')}
+            {setBtn('flux', 'Flux MM20 / MM50 · retour, OB, FVG', 'Étude du 29 octobre', 'Toujours dans le sens du flux MM20 / MM50, entrée sur un retour sur le nuage, un Fibonacci, un order block ou une imbalance')}
+            {hrCount === 0 && setBtn('hr', 'Range horaire · bougie d’une heure', 'Étude, aucun robot gardé', 'La bougie d’une heure (heure de Paris) fait un range, la clôture hors du range donne le sens de la journée')}
           </div>
-          {shown !== 'flux' && <div className="rb-list-tools">
+          {!study && <div className="rb-list-tools">
             <select value={sort} onChange={(e) => setSort(e.target.value as Sort)}>
               {SORTS.map(([k, l]) => <option key={k} value={k}>Tri : {l}</option>)}
             </select>
@@ -480,20 +521,22 @@ export default function RobotsPage() {
               ))}
             </div>
           ))}
-          {!list.length && <div className="rb-empty small">{shown === 'flux' ? 'Aucun réglage n’a tenu : toute l’étude est à côté.' : 'Aucune stratégie pour ce marché.'}</div>}
+          {!list.length && <div className="rb-empty small">{study ? 'Aucun réglage n’a tenu : toute l’étude est à côté.' : 'Aucune stratégie pour ce marché.'}</div>}
         </aside>
         <main className="rb-main" ref={mainRef}>
           <ActiveRobots />
           {shown === 'hr' && <HourStudyCard />}
           {shown === 'dow' && <Folded id="dow" title="Structure Dow · ce que dit l’étude (verdict, walk-forward, heures actives, tous les marchés)"><DowStudyCard onPick={setSel} /></Folded>}
           {shown === 'em' && <EmRobotCard />}
+          {shown === 'nb' && <NbRobotCard />}
           {shown === 'flux' && <FluxStudyCard />}
-          {current ? <Report s={current} /> : shown !== 'hr' && shown !== 'flux' && <div className="rb-empty">Aucune stratégie ne remplit encore les critères.</div>}
+          {shown === 'grid' && <FluxGridCard />}
+          {current ? <Report s={current} /> : shown !== 'hr' && !study && <div className="rb-empty">Aucune stratégie ne remplit encore les critères.</div>}
           {shown !== 'main' && !!report.general?.some((g) => (g.set ?? 'spe') === shown) && (
             <GeneralCard rows={report.general.filter((g) => (g.set ?? 'spe') === shown)} strategies={report.strategies.filter((s) => s.set === shown)} onPick={setSel} />
           )}
 
-          {shown !== 'flux' && <div className="rb-card">
+          {!study && <div className="rb-card">
             <button className="rb-card-title rb-toggle" onClick={() => setShowMarkets(!showMarkets)}>
               {showMarkets ? '▾' : '▸'} Tous les marchés testés ({report.datasets.length})
             </button>

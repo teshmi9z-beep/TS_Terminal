@@ -27,11 +27,18 @@ export function defaultVp(): VpSettings {
     extendPoc: true,
     showVaLines: false,
     background: true,
-    bgColor: '#2962ff',
+    // (the background's opacity is its colour's: 7 %)
+    bgColor: '#2962FF12',
   };
 }
 
-export const vpOf = (d: Drawing): VpSettings => ({ ...defaultVp(), ...d.vp });
+// a background colour without opacity is from before it could be chosen: it was drawn at 7 %
+const legacyBg = (c: string) => (/^#[0-9a-f]{6}$/i.test(c) ? `${c}12` : c);
+
+export function vpOf(d: Drawing): VpSettings {
+  const s = { ...defaultVp(), ...d.vp };
+  return { ...s, bgColor: legacyBg(s.bgColor) };
+}
 
 export type Profile = {
   lo: number;
@@ -110,11 +117,4 @@ export function computeProfile(candles: Candle[], t0: number, t1: number, s: VpS
   if (cache.size > 300) cache.clear();
   cache.set(key, out);
   return out;
-}
-
-export function hexAlpha(hex: string, alpha: number) {
-  const m = /^#?([0-9a-f]{6})$/i.exec(hex);
-  if (!m) return hex;
-  const v = parseInt(m[1], 16);
-  return `rgba(${(v >> 16) & 255}, ${(v >> 8) & 255}, ${v & 255}, ${alpha})`;
 }

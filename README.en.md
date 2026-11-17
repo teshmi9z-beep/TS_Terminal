@@ -79,6 +79,30 @@ Timeframes: ticks (Binance), seconds (Binance), minutes / hours / days. Timefram
 
 Yahoo history limits: 1 min = 30 days, 5–30 min = 60 days, 1 h / 4 h = 2 years, daily and above = everything.
 
+### A share's whole history (without looking for data yourself)
+
+1. Start **IB Gateway** and log in (the usual IBKR account, "Read-Only API" ticked).
+2. Open the share's chart, in any timeframe (1 min to month).
+3. Go back in time (drag the chart to the right, or zoom out): past what Yahoo keeps, the older
+   bars come by themselves from Interactive Brokers, 6 months at a time in 1 h / 4 h (a few
+   seconds each; "Older history: Interactive Brokers…" shows meanwhile). The bars received are kept
+   on this PC: the next time, it is immediate.
+
+What you get (checked on 2026-11-12):
+
+- **US shares and ETFs** (NVDA, AAPL, TSLA…, and any US share found by the search): in 1 h / 4 h
+  since about 2004 (NVDA: 23 January 2004), with pre-market and after-hours; daily since the
+  listing (Yahoo). Of the list's 87 US shares, 85 answer; SPCX has nothing before June 2026 (listed
+  since) and IBKR no longer knows ROKU.
+- **Paris and Frankfurt shares** (.PA, .DE): IBKR gives their history only with the exchange's
+  market data subscription (Euronext, Xetra, in IBKR's client portal > Settings > Market data
+  subscriptions). Without it: 2 years in 1 h / 4 h (Yahoo), everything in daily.
+- A banner says why the history stops: gateway closed (start it, then open the chart again),
+  subscription missing, security unknown to IBKR.
+
+To download everything at once (robots, tests): **Developer** page, **Data** tab, the share's row,
+source "Interactive Brokers".
+
 ## Shortcuts
 
 - Type a letter anywhere: symbol search

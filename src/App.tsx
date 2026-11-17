@@ -36,6 +36,7 @@ import { startToolWindow, startToolWindowHub } from './components/toolWindows';
 import { startPopoutHub, startPopoutReporter, startThemeSync } from './components/popouts';
 import { startChartLink } from './components/chartLink';
 import { startListBackup } from './components/listBackup';
+import { startDrawingHistory } from './store/drawingHistory';
 import { useStore, POPOUT_ID, POPOUT_TOOL } from './store/store';
 import { useChartUi } from './store/chartUi';
 
@@ -87,6 +88,8 @@ function App() {
   useEffect(() => (POPOUT_ID ? undefined : startListBackup()), []);
   // light / dark follows in every window
   useEffect(() => startThemeSync(), []);
+  // Ctrl+Z / Ctrl+Y on the drawings (each chart window keeps its own history)
+  useEffect(() => startDrawingHistory(), []);
   // linked charts (symbol, timeframe, scrolling) follow each other across windows
   useEffect(() => (POPOUT_TOOL ? undefined : startChartLink()), []);
   // a tool window works on the main window's data; the main window takes its changes and opens its charts
@@ -167,7 +170,7 @@ function App() {
       {dialog === 'guards' && !POPOUT_ID && <GuardsDialog onClose={closeDialog} />}
       {!POPOUT_ID && <FloatingPineEditor />}
       {codeFor && <CodeViewer />}
-      {alertDraft && !POPOUT_ID && <AlertDialog key={alertDraft.edit?.id ?? `${alertDraft.indicatorId ?? ''}:${alertDraft.plot ?? ''}`} />}
+      {alertDraft && !POPOUT_ID && <AlertDialog key={alertDraft.edit?.id ?? `${alertDraft.indicatorId ?? ''}:${alertDraft.plot ?? ''}:${JSON.stringify(alertDraft.conditions ?? null)}`} />}
       <SymbolMenu />
       <Toast />
     </div>

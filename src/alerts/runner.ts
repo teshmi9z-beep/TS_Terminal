@@ -5,11 +5,22 @@ import { openFeed, type FeedSession } from '../data/feeds';
 import { getIndicatorDef } from '../indicators/registry';
 import { computeWithSources } from '../indicators/derived';
 import { alertMet, alertSummary, barsNeeded, valueReader } from './evaluate';
+import { followDrawing } from '../components/anchoredVwap';
 
 // Alerts on indicators, live: one feed per (symbol, timeframe) the active alerts need, shared by
 // them. Each new price recomputes the indicators of each alert on that feed (at most once a
 // second) and checks its conditions on the forming bar; "à la clôture" alerts are checked once,
 // on the bar that just closed. Runs in the main window while the platform is open.
+
+// an alert on an anchored VWAP follows the drawing while it exists (its anchor moved, its bands
+// changed): its conditions read the drawing's settings now
+export function followDrawings(a: TechAlert): TechAlert {
+  const ops = a.conditions.flatMap((c) => [c.left, c.right, c.right2]);
+  if (!ops.some((o) => o?.kind === 'avwap')) return a;
+  const drawings = useStore.getState().drawings;
+  const follow = <T extends TechAlert['conditions'][number]['left'] | undefined>(o: T): T => (o?.kind === 'avwap' ? followDrawing(o, drawings) as T : o);
+  return { ...a, conditions: a.conditions.map((c) => ({ ...c, left: follow(c.left), right: follow(c.right), right2: follow(c.right2) })) };
+}
 
 // a watchlist alert follows this many symbols at most
 export const WATCHLIST_MAX = 60;
@@ -110,7 +121,7 @@ class AlertFeed {
       if (!closed && a.target.kind === 'symbol' && a.lastFired && a.lastFired >= bar * 1000) continue;
       let met = false;
       try {
-        met = alertMet(a, i, valueReader(k, computeWithSources(a.indicators, k, getIndicatorDef)));
+        met = alertMet(followDrawings(a), i, valueReader(k, computeWithSources(a.indicators, k, getIndicatorDef)));
       } catch { /* an indicator failing on these bars: no alert */ }
       if (!met) continue;
       this.firedOn.set(id, bar);
@@ -176,7 +187,7 @@ export function syncAlerts(alerts: TechAlert[], watchlists: WatchlistTab[]) {
       const key = `${s.ticker}|${a.tf}`;
       const w = wanted.get(key) ?? { symbol: s, tf: a.tf, ids: new Set<string>(), need: 0 };
       w.ids.add(a.id);
-      w.need = Math.max(w.need, barsNeeded(a));
+      w.need = Math.max(w.need, barsNeeded(followDrawings(a)));
       wanted.set(key, w);
     }
   }

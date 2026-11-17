@@ -106,7 +106,7 @@ export default function LeftToolbar() {
         <MagnetIcon strong={(magnet === 'off' ? magnetMode : magnet) === 'strong'} on={magnet !== 'off'} />
       </button>
       <button
-        title="Modèles de dessin (styles enregistrés)" className={`tool-btn tool-tone tone-shape ${presetsAt ? 'active' : ''}`}
+        title="Mes styles de dessin : un outil avec sa couleur et son trait, prêt à dessiner" className={`tool-btn tool-tone tone-shape ${presetsAt ? 'active' : ''}`}
         onClick={(e) => {
           const r = e.currentTarget.getBoundingClientRect();
           setPresetsAt(presetsAt ? null : { x: r.right + 6, y: r.top });
@@ -121,7 +121,14 @@ export default function LeftToolbar() {
       >
         ★
       </button>
-      <button title={`Effacer les dessins de ${ticker}`} className="tool-btn tool-tone tone-red" onClick={() => clearDrawings(ticker)}><BinIcon /></button>
+      <button
+        title={`Effacer les dessins de ${ticker} (Ctrl+Z les remet)`} className="tool-btn tool-tone tone-red"
+        onClick={() => {
+          const had = useStore.getState().drawings.some((d) => !d.ticker || d.ticker === ticker);
+          clearDrawings(ticker);
+          if (had) useChartUi.getState().showToast('Dessins effacés : Ctrl+Z pour les remettre');
+        }}
+      ><BinIcon /></button>
 
       {menu && (
         <>

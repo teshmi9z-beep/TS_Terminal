@@ -74,6 +74,8 @@ function groupByDay<T>(list: T[] | null, time: (r: T) => number, dayOf: (t: numb
 }
 const EMPTY_WEEK: Week = { eco: null, earnings: null, dividends: null, ipo: null, errors: {} };
 const NONE_E: EarningsRow[] = [], NONE_D: DividendRow[] = [], NONE_I: IpoRow[] = [];
+// the economic list opens on today the first time the page shows (later, it comes back where it was left)
+let listShown = false;
 
 // TradingView's calendar: a week of economic events, earnings, dividends and IPOs
 export default function CalendarPage() {
@@ -88,9 +90,16 @@ export default function CalendarPage() {
   const [cats, setCats] = useKept<EcoCategory[] | null>('cal.cats', null);
   const [cardsOpen, setCardsOpen] = useKept('cal.cardsOpen', true);
   const [data, setData] = useKept<{ key: string } & Week>('cal.data', { key: '', eco: null, earnings: null, dividends: null, ipo: null, errors: {} }, true);
+  // economic events: the whole week in one list (like ForexFactory), or one day at a time
+  const [listView, setListView] = useKept('cal.list', true);
   const dateRef = useRef<HTMLInputElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const dayRows = useRef(new Map<number, HTMLTableRowElement>());
+  // the day the list should bring into view (a card clicked, today, a date picked)
+  const [goTo, setGoTo] = useState<number | null>(() => (listShown ? null : day));
+  useEffect(() => { listShown = true; }, []);
 
-  const setTz = (z: string) => { setTzState(z); write('tesh.cal.tz', z); setWeek(weekStart(day + 3600 * 12, z)); setDay(dayStart(day + 3600 * 12, z)); };
+  const setTz = (z: string) => { setTzState(z); write('tesh.cal.tz', z); setWeek(weekStart(day + 3600 * 12, z)); setDay(dayStart(day + 3600 * 12, z)); setGoTo(dayStart(day + 3600 * 12, z)); };
   const setCountries = (c: string[] | null) => { setCountriesState(c); write('tesh.cal.countries', c); };
   useEffect(() => { const id = setInterval(() => setNow(Date.now() / 1000), 1000); return () => clearInterval(id); }, []);
 
@@ -101,7 +110,7 @@ export default function CalendarPage() {
     const from = week, to = week + 7 * DAY;
     const set = (patch: Partial<Week>) => { if (!ctrl.signal.aborted) setData((d) => ({ ...(d.key === key ? d : EMPTY_WEEK), ...patch, key })); };
     const fail = (k: Kind) => (e: unknown) => set({ errors: { [k]: e instanceof Error ? e.message : String(e) } });
-    fetchEconomic().then((eco) => set({ eco }), fail('economic'));
+    fetchEconomic(from, to).then((eco) => set({ eco }), fail('economic'));
     // only the euro area chosen: no stock market
     if (markets && !markets.length) return () => ctrl.abort();
     fetchEarnings(from, to, markets, ctrl.signal).then((earnings) => set({ earnings }), fail('earnings'));
@@ -131,39 +140,74 @@ export default function CalendarPage() {
     dividends: byDay.dividends.get(d0)?.length ?? 0, ipo: byDay.ipo.get(d0)?.length ?? 0,
   });
   const today = dayStart(now, tz);
-  const goWeek = (n: number) => { const w = weekStart(week + n * 7 * DAY + 3600 * 12, tz); setWeek(w); setDay(w + (day - week)); };
-  const jump = (t: number) => { setWeek(weekStart(t, tz)); setDay(dayStart(t, tz)); };
+  const goWeek = (n: number) => { const w = weekStart(week + n * 7 * DAY + 3600 * 12, tz); setWeek(w); setDay(w + (day - week)); setGoTo(w + (day - week)); };
+  const jump = (t: number) => { setWeek(weekStart(t, tz)); setDay(dayStart(t, tz)); setGoTo(dayStart(t, tz)); };
+  const pickDay = (d0: number) => { setDay(d0); setGoTo(d0); };
   const nextEvent = eco.find((e) => e.time > now && keep(e))?.time ?? null;
+  const asList = kind === 'economic' && listView;
+
+  // the list scrolls to the chosen day once its rows are there
+  useEffect(() => {
+    if (goTo == null || !asList) return;
+    const row = dayRows.current.get(goTo), box = scrollRef.current;
+    if (!row || !box) return;
+    const head = box.querySelector('thead')?.getBoundingClientRect().height ?? 0;
+    box.scrollTop += row.getBoundingClientRect().top - box.getBoundingClientRect().top - head;
+    setGoTo(null);
+  }, [goTo, asList, d.eco, eco, week]);
 
   // ---------- day tables
   const dayTitle = fmt(day + 3600 * 12, tz, { weekday: 'long', day: 'numeric', month: 'long' });
+  const ecoRow = (e: EcoEvent, prev: EcoEvent | undefined, i: number) => {
+    const sameTime = prev && prev.time === e.time;
+    return (
+      <tr key={`${e.time}${e.title}${i}`} className={e.time < now ? 'past' : ''}>
+        <td className="cal-time">{!sameTime && (e.impact === 'Holiday' ? 'Journée' : <span className={e.time === nextEvent ? 'cal-next' : ''}>{hhmm(e.time, tz)}</span>)}</td>
+        <td className="cal-country">{!(sameTime && prev.country === e.country) && <><img src={flagUrl(e.country)} alt="" />{countryName(e.country)}</>}</td>
+        <td className="cal-imp-cell"><Importance level={e.impact} /></td>
+        <td className="left cal-title">{e.title}</td>
+        <td className="cal-actual">{e.actual || (e.time > now && e.time - now < 3600 ? <Countdown to={e.time} now={now} /> : '')}</td>
+        <td>{e.forecast}</td>
+        <td>{e.previous}</td>
+      </tr>
+    );
+  };
   let body: ReactNode = null;
-  if (kind === 'economic') {
+  if (kind === 'economic' && !d.eco) {
+    body = d.errors.economic
+      ? <div className="pg-empty">Aucun événement : le calendrier économique ne répond pas.</div>
+      : <div className="pg-empty"><span className="spinner" /> Chargement…</div>;
+  } else if (asList) {
+    body = (
+      <table className="cal-table cal-list">
+        <thead><tr><th className="left">Heure</th><th className="left">Pays</th><th /><th className="left">Événement</th><th>Actuel</th><th>Prévision</th><th>Précédent</th></tr></thead>
+        {days.map((d0) => {
+          const rows = (byDay.eco.get(d0) ?? []).filter(keep);
+          return (
+            <tbody key={d0}>
+              <tr className={`cal-day-row ${d0 === today ? 'today' : ''}`} ref={(el) => { if (el) dayRows.current.set(d0, el); else dayRows.current.delete(d0); }}>
+                <td colSpan={7} className="left">
+                  {d0 === today && <span className="cal-today-tag">Aujourd’hui</span>}
+                  <span className="cal-day-name">{fmt(d0 + 3600 * 12, tz, { weekday: 'long', day: 'numeric', month: 'long' })}</span>
+                </td>
+              </tr>
+              {rows.length
+                ? rows.map((e, i) => ecoRow(e, rows[i - 1], i))
+                : <tr className="cal-none"><td colSpan={7} className="left">Aucun événement avec ces filtres.</td></tr>}
+            </tbody>
+          );
+        })}
+      </table>
+    );
+  } else if (kind === 'economic') {
     const rows = (byDay.eco.get(day) ?? []).filter(keep);
     body = (
       <table className="cal-table">
         <thead><tr><th colSpan={4} className="left cal-day-title">{dayTitle}</th><th>Actuel</th><th>Prévision</th><th>Précédent</th></tr></thead>
-        <tbody>
-          {rows.map((e, i) => {
-            const prev = rows[i - 1];
-            const sameTime = prev && prev.time === e.time;
-            return (
-              <tr key={`${e.time}${e.title}${i}`} className={e.time < now ? 'past' : ''}>
-                <td className="cal-time">{!sameTime && (e.impact === 'Holiday' ? 'Journée' : <span className={e.time === nextEvent ? 'cal-next' : ''}>{hhmm(e.time, tz)}</span>)}</td>
-                <td className="cal-country">{!(sameTime && prev.country === e.country) && <><img src={flagUrl(e.country)} alt="" />{countryName(e.country)}</>}</td>
-                <td className="cal-imp-cell"><Importance level={e.impact} /></td>
-                <td className="left cal-title">{e.title}</td>
-                <td className="cal-actual">{e.actual || (e.time > now && e.time - now < 3600 ? <Countdown to={e.time} now={now} /> : '')}</td>
-                <td>{e.forecast}</td>
-                <td>{e.previous}</td>
-              </tr>
-            );
-          })}
-        </tbody>
+        <tbody>{rows.map((e, i) => ecoRow(e, rows[i - 1], i))}</tbody>
       </table>
     );
-    if (!d.eco && !d.errors.economic) body = <div className="pg-empty"><span className="spinner" /> Chargement…</div>;
-    else if (!rows.length) body = <>{body}<div className="pg-empty">{week !== weekStart(now, tz) ? 'Le flux économique gratuit (ForexFactory) ne couvre que la semaine en cours.' : 'Aucun événement ce jour-là avec ces filtres.'}</div></>;
+    if (!rows.length) body = <>{body}<div className="pg-empty">Aucun événement ce jour-là avec ces filtres.</div></>;
   } else if (kind === 'earnings') {
     const rows = byDay.earnings.get(day) ?? [];
     const surprise = (a: number | null, b: number | null) => (a != null && b ? ((a - b) / Math.abs(b)) * 100 : null);
@@ -295,7 +339,7 @@ export default function CalendarPage() {
             const c = counts(d0);
             const lines: [string, number][] = [['Economie', c.economic], ['Bénéfices', c.earnings], ['Dividendes', c.dividends], ['IPO (Introduction en bourse)', c.ipo]];
             return (
-              <button key={d0} className={`cal-card ${d0 === day ? 'active' : ''} ${d0 === today ? 'today' : ''}`} onClick={() => setDay(d0)}>
+              <button key={d0} className={`cal-card ${d0 === day ? 'active' : ''} ${d0 === today ? 'today' : ''}`} onClick={() => pickDay(d0)}>
                 <b>{fmt(d0 + 3600 * 12, tz, { weekday: 'short', day: 'numeric' })}</b>
                 {lines.filter(([, n]) => n > 0).map(([l, n]) => <span key={l}><em>{l}</em><i>{n}</i></span>)}
               </button>
@@ -311,6 +355,10 @@ export default function CalendarPage() {
         <span className="op-spacer" />
         {kind === 'economic' && (
           <>
+            <div className="op-seg cal-view">
+              <button className={listView ? 'active' : ''} onClick={() => { setListView(true); setGoTo(day); }}>Liste</button>
+              <button className={listView ? '' : 'active'} onClick={() => setListView(false)}>Par jour</button>
+            </div>
             <Dropdown align="right" title="Importance" label={<Importance level={importance === 3 ? 'High' : importance === 2 ? 'Medium' : 'Low'} />}>
               {(close) => (
                 <div className="op-dd-list">
@@ -336,10 +384,10 @@ export default function CalendarPage() {
         )}
       </div>
       {d.errors[kind] && <div className="pg-error">{d.errors[kind]}</div>}
-      <div className="pg-scroll cal-body">{body}</div>
+      <div ref={scrollRef} className="pg-scroll cal-body">{body}</div>
       <div className="pg-note">
         {kind === 'economic'
-          ? 'Événements économiques : ForexFactory (semaine en cours ; la valeur publiée n’est pas fournie par ce flux gratuit).'
+          ? 'Événements économiques : ForexFactory pour la semaine en cours, TradingView pour les autres semaines et les valeurs publiées.'
           : 'Données TradingView (actions et certificats de dépôt, cotations principales).'}
       </div>
     </div>

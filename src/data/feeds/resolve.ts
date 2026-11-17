@@ -22,7 +22,10 @@ export function binanceId(sym: Symbol): string | null {
   return null;
 }
 
+// (a built-in symbol's current Yahoo id wins too: STLA.PA became STLAP.PA on Yahoo)
 export function yahooId(sym: Symbol): string | null {
+  const builtin = SYMBOLS.find((s) => s.ticker === sym.ticker)?.yahoo;
+  if (builtin) return builtin;
   if (sym.yahoo) return sym.yahoo;
   if (YAHOO_MAP[sym.ticker]) return YAHOO_MAP[sym.ticker];
   switch (sym.category) {
@@ -38,6 +41,20 @@ export function yahooId(sym: Symbol): string | null {
 export function usShareId(sym: Symbol): string | null {
   const y = sym.category === 'Actions' ? yahooId(sym) : null;
   return y && /^[A-Z][A-Z0-9-]*$/.test(y) ? y : null;
+}
+
+// a share's IBKR contract, for the history older than Yahoo's (Yahoo keeps the hours of 730 days
+// only). US shares route through SMART; Paris and Xetra need IBKR's Euronext / German market data
+// subscription, without which IBKR refuses their history (error 162)
+const IB_EXCHANGES: Record<string, [string, string]> = { PA: ['SBF', 'EUR'], DE: ['IBIS', 'EUR'] };
+export function ibStockId(sym: Symbol): string | null {
+  if (sym.category !== 'Actions') return null;
+  const us = usShareId(sym);
+  // (IBKR writes BRK-B "BRK B")
+  if (us) return `STK:${us.replace('-', ' ')}:SMART:USD`;
+  const m = /^([A-Z0-9-]+)\.([A-Z]+)$/.exec(yahooId(sym) ?? '');
+  const ex = m ? IB_EXCHANGES[m[2]] : undefined;
+  return m && ex ? `STK:${m[1].replace('-', ' ')}:${ex[0]}:${ex[1]}` : null;
 }
 
 // ordered list of feeds to try; the simulator is always the last resort

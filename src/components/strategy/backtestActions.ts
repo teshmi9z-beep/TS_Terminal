@@ -1,7 +1,7 @@
 import { useStore } from '../../store/store';
 import { useChartUi } from '../../store/chartUi';
 import { loadHistory, runStrategy, type LoadedHistory } from '../../strategy/run';
-import { loadLabBars, runDowRobot, runEmRobot, runRobot } from '../../robots/robotBacktest';
+import { loadLabBars, runDowRobot, runEmRobot, runNbRobot, runRobot } from '../../robots/robotBacktest';
 import { EM_LOAD_FROM } from '../../robots/emBacktest';
 import { platformSymbol } from '../../data/labSymbols';
 import type { IndicatorConfig, Symbol, Timeframe } from '../../types';
@@ -68,6 +68,8 @@ async function runRobotTest(cfg: IndicatorConfig, quiet: boolean) {
       labCache.set(vk, vix);
       if (run !== runSeq) return;
       result = runEmRobot(cfg, rows, vix, ctx);
+    } else if (cfg.type === 'NOISE_BAND') {
+      result = runNbRobot(cfg, rows, ctx);
     } else if (cfg.type === 'DOW_STRUCTURE') {
       // the Dow structure robot: the bars cleaned as its study read them (HistData's source name)
       result = runDowRobot(cfg, rows, { ...ctx, source: o?.source ?? '', market: o?.market ?? '' });
@@ -80,8 +82,8 @@ async function runRobotTest(cfg: IndicatorConfig, quiet: boolean) {
 }
 
 // the robot the tester follows on this chart, if any
-// a lab robot, or the Expected Move / Dow structure indicator opened from its robot's report
-export const isTesterRobot = (i: IndicatorConfig) => i.type === 'ROBOT' || ((i.type === 'EXPECTED_MOVE' || i.type === 'DOW_STRUCTURE') && !!i.robot);
+// a lab robot, or the Expected Move / Dow structure / noise-band indicator opened from its robot's report
+export const isTesterRobot = (i: IndicatorConfig) => i.type === 'ROBOT' || ((i.type === 'EXPECTED_MOVE' || i.type === 'DOW_STRUCTURE' || i.type === 'NOISE_BAND') && !!i.robot);
 export const testedRobot = (st = useStore.getState()) => st.indicators.find((i) => isTesterRobot(i) && i.id === st.testerRobot);
 
 // loads the chart symbol's history and runs the active (or given) strategy on it, or the

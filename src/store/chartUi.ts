@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { IndicatorType, Symbol, TechAlert, Timeframe } from '../types';
+import type { AlertCondition, IndicatorType, Symbol, TechAlert, Timeframe } from '../types';
 import type { FeedSource } from '../data/feeds/types';
 import { useStore, type ChartLayout, type PaperSide, type Popout } from './store';
 import type { OrderDraft } from '../components/orderDraft';
@@ -23,7 +23,8 @@ export type SymbolMenuTarget = {
 
 // the "Créer une alerte" dialog: a new alert (on an indicator's plot when opened from its legend)
 // or one being changed
-export type AlertDraft = { edit?: TechAlert; indicatorId?: string; plot?: string };
+// (`conditions`: a new alert already set, e.g. the price entering a rectangle's zone)
+export type AlertDraft = { edit?: TechAlert; indicatorId?: string; plot?: string; conditions?: AlertCondition[] };
 
 // bar replay: 'select' waits for a click on the chart, 'on' replays from `time`
 export type ReplayState = {

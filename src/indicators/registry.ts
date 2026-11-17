@@ -22,7 +22,9 @@ import { PIVOT_POINTS } from './custom/pivotPoints';
 import { BASIS } from './custom/basis';
 import { GAP_OPEN } from './custom/gapOpen';
 import { EXPECTED_MOVE } from './custom/expectedMove';
+import { NOISE_BAND } from './custom/noiseBand';
 import { FLUX } from './custom/flux';
+import { FLUX_GRID } from './custom/fluxGrid';
 import { ROBOT } from '../robots/robotIndicator';
 
 export type { IndicatorCategory, IndicatorDef, InputDef, Plot, PlotPoint, StyleDef } from './types';
@@ -215,6 +217,8 @@ export const INDICATORS: Record<BuiltinIndicatorType, IndicatorDef> = {
   GAP_OPEN,
   EXPECTED_MOVE,
   FLUX,
+  FLUX_GRID,
+  NOISE_BAND,
   ROBOT,
 };
 

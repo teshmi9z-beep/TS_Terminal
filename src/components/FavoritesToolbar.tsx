@@ -61,7 +61,8 @@ export default function FavoritesToolbar() {
           if (!p) return null;
           return (
             <button
-              key={key} className={`fav-btn ${activePresetId === p.id ? 'active' : ''}`} title={p.name}
+              key={key} className={`fav-btn fav-style ${activePresetId === p.id ? 'active' : ''}`}
+              title={`Mon style « ${p.name} » : ${TOOL_INFO[p.tool].label}, ${p.lineWidth} px (clic droit : retirer)`}
               onClick={() => selectPreset(p.id)} onContextMenu={(e) => { e.preventDefault(); toggleFavoriteTool(key); }}
             >
               <PresetIcon preset={p} />

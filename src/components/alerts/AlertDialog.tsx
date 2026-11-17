@@ -10,6 +10,7 @@ import { tfShortLabel } from '../../data/timeframes';
 import { findSymbol } from '../symbolDnd';
 import { currentPrice } from '../symbolActions';
 import { mainChart } from '../mainChart';
+import { avwapLabel, avwapOf, avwapOperand } from '../anchoredVwap';
 import type { AlertCondition, AlertOp, AlertOperand, AlertTrigger, IndicatorConfig, TechAlert, Timeframe } from '../../types';
 
 // TradingView's "Créer une alerte": conditions on the price and the chart's indicators (several,
@@ -24,11 +25,15 @@ const TRIGGERS: [AlertTrigger, string, string][] = [
 ];
 const MAX_CONDITIONS = 5;
 
-// operands as <select> values: 'price', 'value', 'plot:<indicator id>:<plot key>'
-const encode = (o: AlertOperand) => (o.kind === 'plot' ? `plot:${o.id}:${o.plot}` : o.kind);
-function decode(v: string, keepValue: number): AlertOperand {
+// operands as <select> values: 'price', 'value', 'plot:<indicator id>:<plot key>',
+// 'avwap:<drawing id>:<line>:<band>' (an anchored VWAP's line: the option carries its operand)
+type OperandOption = { v: string; label: string; op?: AlertOperand };
+const encode = (o: AlertOperand) => (o.kind === 'plot' ? `plot:${o.id}:${o.plot}` : o.kind === 'avwap' ? `avwap:${o.drawing}:${o.line}:${o.band}` : o.kind);
+function decode(v: string, keepValue: number, options: OperandOption[]): AlertOperand {
   if (v === 'price') return { kind: 'price' };
   if (v === 'value') return { kind: 'value', value: keepValue };
+  const opt = options.find((o) => o.v === v)?.op;
+  if (opt) return opt;
   const [, id, ...plot] = v.split(':');
   return { kind: 'plot', id, plot: plot.join(':') };
 }
@@ -61,12 +66,12 @@ function firstCondition(pool: IndicatorConfig[], indicatorId?: string, plot?: st
 }
 
 function OperandPick({ value, onChange, options, allowValue, allowPrice = true }: {
-  value: AlertOperand; onChange: (o: AlertOperand) => void; options: { v: string; label: string }[]; allowValue: boolean; allowPrice?: boolean;
+  value: AlertOperand; onChange: (o: AlertOperand) => void; options: OperandOption[]; allowValue: boolean; allowPrice?: boolean;
 }) {
   const keep = value.kind === 'value' ? value.value : 0;
   return (
     <span className="al-operand">
-      <select className="idg-select" value={encode(value)} onChange={(e) => onChange(decode(e.target.value, keep))}>
+      <select className="idg-select" value={encode(value)} onChange={(e) => onChange(decode(e.target.value, keep, options))}>
         {allowValue && <option value="value">Valeur</option>}
         {allowPrice && <option value="price">Prix (clôture)</option>}
         {options.map((o) => <option key={o.v} value={o.v}>{o.label}</option>)}
@@ -103,11 +108,28 @@ export default function AlertDialog() {
     return def ? sourcePlots(cfg, def).map((p) => ({ v: `plot:${cfg.id}:${p.key}`, label: indicatorLabel(cfg.id, p.key, pool) })) : [];
   }), [pool]);
 
+  // the anchored VWAPs drawn on the chart's symbol: their VWAP and the bands shown, and the ones
+  // an alert being edited reads (also when their drawing is gone)
+  const drawings = useStore((s) => s.drawings);
+  const [conditionsAtOpen] = useState(() => edit?.conditions ?? draft?.conditions ?? []);
+  const avwapOptions = useMemo(() => {
+    const out: OperandOption[] = [];
+    const add = (op: AlertOperand) => { if (!out.some((o) => o.v === encode(op))) out.push({ v: encode(op), label: op.kind === 'avwap' ? avwapLabel(op) : '', op }); };
+    for (const d of drawings) {
+      if (d.tool !== 'anchored_vwap' || (d.ticker && d.ticker !== chartSymbol.ticker)) continue;
+      add(avwapOperand(d, 'vwap'));
+      avwapOf(d).bands.forEach((b, k) => { if (b.on) { add(avwapOperand(d, 'up', k)); add(avwapOperand(d, 'lo', k)); } });
+    }
+    for (const c of conditionsAtOpen) for (const o of [c.left, c.right, c.right2]) if (o?.kind === 'avwap') add(o);
+    return out;
+  }, [drawings, chartSymbol.ticker, conditionsAtOpen]);
+  const options = useMemo(() => [...plotOptions, ...avwapOptions], [plotOptions, avwapOptions]);
+
   const [targetKind, setTargetKind] = useState<'symbol' | 'watchlist'>(edit?.target.kind ?? 'symbol');
   const [ticker, setTicker] = useState(edit?.target.kind === 'symbol' ? edit.target.symbol.ticker : chartSymbol.ticker);
   const [watchlistId, setWatchlistId] = useState(edit?.target.kind === 'watchlist' ? edit.target.watchlistId : activeWatchlistId);
   const [tf, setTf] = useState<Timeframe>(edit?.tf ?? chartTf);
-  const [conditions, setConditions] = useState<AlertCondition[]>(() => edit?.conditions ?? [firstCondition(pool, draft?.indicatorId, draft?.plot)]);
+  const [conditions, setConditions] = useState<AlertCondition[]>(() => edit?.conditions ?? draft?.conditions ?? [firstCondition(pool, draft?.indicatorId, draft?.plot)]);
   const [match, setMatch] = useState<'all' | 'any'>(edit?.match ?? 'all');
   const [trigger, setTrigger] = useState<AlertTrigger>(edit?.trigger ?? 'once');
   const [noExpiry, setNoExpiry] = useState(!edit?.expires);
@@ -223,7 +245,7 @@ export default function AlertDialog() {
           return (
             <div key={i} className="al-cond">
               {i > 0 && <span className="al-join">{match === 'all' ? 'ET' : 'OU'}</span>}
-              <OperandPick value={c.left} onChange={(o) => setCond(i, { left: o })} options={plotOptions} allowValue={false} />
+              <OperandPick value={c.left} onChange={(o) => setCond(i, { left: o })} options={options} allowValue={false} />
               <select className="idg-select al-op" value={c.op} onChange={(e) => setOp(i, e.target.value as AlertOp)}>
                 {OPS.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
               </select>
@@ -238,12 +260,12 @@ export default function AlertDialog() {
                   <span className="dt-muted">barre(s)</span>
                 </span>
               ) : (
-                <OperandPick value={c.right} onChange={(o) => setCond(i, { right: o })} options={plotOptions} allowValue />
+                <OperandPick value={c.right} onChange={(o) => setCond(i, { right: o })} options={options} allowValue />
               )}
               {meta.channel && (
                 <>
                   <span className="dt-muted">et</span>
-                  <OperandPick value={c.right2 ?? c.right} onChange={(o) => setCond(i, { right2: o })} options={plotOptions} allowValue />
+                  <OperandPick value={c.right2 ?? c.right} onChange={(o) => setCond(i, { right2: o })} options={options} allowValue />
                 </>
               )}
               {conditions.length > 1 && <button className="remove-btn al-del" title="Retirer cette condition" onClick={() => setConditions((cs) => cs.filter((_, j) => j !== i))}>✕</button>}
@@ -261,7 +283,7 @@ export default function AlertDialog() {
             </div>
           )}
         </div>
-        {!plotOptions.length && <div className="dt-muted">Ajoutez un indicateur au graphique pour poser une condition dessus.</div>}
+        {!options.length && <div className="dt-muted">Ajoutez un indicateur au graphique pour poser une condition dessus.</div>}
 
         <div className="modal-title">Déclenchement</div>
         <div className="dt-seg">

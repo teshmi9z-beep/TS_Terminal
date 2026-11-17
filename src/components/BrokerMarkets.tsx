@@ -64,7 +64,8 @@ export default function BrokerMarkets() {
       <div className="side-title with-ctl"><BrokerLogo id={active} size={18} /><span className="bk-markets-title">Marchés IG</span><PanelControls panel="broker" /></div>
       {!connected ? (
         <div className="side-empty bk-off">
-          {brokerLabel(active)} n’est pas connecté.
+          {/* (the virtual account has no IG markets: the panel speaks of IG then) */}
+          {active === 'paper' ? 'IG' : brokerLabel(active)} n’est pas connecté.
           <button className="pill-btn primary" onClick={() => useChartUi.getState().openDialog('brokers')}>Se connecter</button>
         </div>
       ) : (

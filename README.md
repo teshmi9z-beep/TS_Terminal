@@ -78,6 +78,31 @@ pour les actions, les barres H sont alignées sur l'ouverture de séance comme s
 
 Limites de l'historique Yahoo : 1 min = 30 jours, 5–30 min = 60 jours, 1 h / 4 h = 2 ans, journalier et plus = tout.
 
+### Tout l'historique d'une action (sans rien chercher soi-même)
+
+1. Lancer **IB Gateway** et se connecter (le compte IBKR habituel, « Read-Only API » coché).
+2. Ouvrir le graphique de l'action, dans n'importe quelle unité (1 min à mois).
+3. Reculer dans le temps (glisser le graphique vers la droite, ou dézoomer) : au-delà de ce que
+   Yahoo garde, les barres plus anciennes arrivent toutes seules d'Interactive Brokers, 6 mois par
+   6 mois en 1 h / 4 h (quelques secondes chacun ; « Historique plus ancien : Interactive Brokers… »
+   s'affiche pendant ce temps). Les barres reçues sont gardées sur ce PC : la fois suivante, c'est
+   immédiat.
+
+Ce qu'on obtient (vérifié le 12/11/2026) :
+
+- **Actions et ETF américains** (NVDA, AAPL, TSLA…, et toute action US trouvée par la recherche) :
+  en 1 h / 4 h depuis 2004 environ (NVDA : 23 janvier 2004), avec pré-marché et après-bourse ; en
+  journalier depuis la cotation (Yahoo). Sur les 87 actions US de la liste, 85 répondent ; SPCX n'a
+  rien avant juin 2026 (cotée depuis) et IBKR ne connaît plus ROKU.
+- **Actions de Paris et Francfort** (.PA, .DE) : IBKR ne donne leur historique qu'avec l'abonnement
+  aux données de la bourse (Euronext, Xetra, dans le portail client IBKR > Réglages > Abonnements
+  aux données de marché). Sans lui : 2 ans en 1 h / 4 h (Yahoo), tout en journalier.
+- Un bandeau dit pourquoi l'historique s'arrête : Gateway fermée (la lancer puis rouvrir le
+  graphique), abonnement manquant, titre inconnu d'IBKR.
+
+Pour tout télécharger d'un coup (robots, tests) : page **Développeur**, onglet **Data**, ligne de
+l'action, source « Interactive Brokers ».
+
 ## Raccourcis
 
 - Taper une lettre n'importe où : recherche de symbole
@@ -624,6 +649,24 @@ node robots/.build/night-wf.mjs pivweek 1h Crypto 60   # walk-forward, sans rega
 ```
 
 L'indicateur « Points pivots + cassures (jour / semaine) » (`src/indicators/custom/pivotPoints.ts`) en reprend les trois règles gardées.
+
+### Étude price action et bande de bruit
+
+L'étude du 11 novembre 2026 (indices, forex majeur, matières premières, depuis 2020) et son seul candidat, non prouvé : le momentum intraday hors de la « bande de bruit ». Rapports : `robots/pa/PRICE-ACTION.md` et `robots/pa/PRICE-ACTION-2.md` (battre le marché, money management).
+
+```bash
+node scripts/robots/build.mjs
+node robots/.build/pa-study.mjs            # les grilles : bande de bruit, tendance journalière, force des devises
+node robots/.build/pa-check.mjs            # walk-forward 2022 → 2026 et jumeaux au hasard (PA_MODE=mom, fade ou both)
+node robots/.build/pa-mm.mjs               # money management sur les trades du walk-forward
+node robots/.build/nb-publish.mjs          # les 4 robots de l'onglet Robots (public/robots/nb.json) ; « variantes » compare les stops
+node robots/.build/pa2-regime.mjs          # 2e tour : le marché à battre, régimes de la bande de bruit
+node robots/.build/pa2-alloc.mjs           # parties de la journée, allocation par momentum
+node robots/.build/pa2-mm.mjs              # money management sur entrées au hasard (13 plans)
+node robots/.build/pa2-portfolio.mjs       # portefeuille sans regard en arrière contre acheter et garder
+```
+
+L'indicateur « Bande de bruit (momentum intraday) » (`src/indicators/custom/noiseBand.ts`) trace la bande en 5, 15 ou 30 minutes et les signaux du robot en 15 minutes. La règle (`src/robots/noiseBand.ts`) est la même pour l'indicateur, le testeur, le mode automatique (`src/robots/nbRunner.ts`) et le rapport.
 
 ### Gaps d'ouverture des indices cash
 

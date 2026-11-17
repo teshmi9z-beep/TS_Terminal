@@ -1,18 +1,24 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
-import { QUICK_COLORS } from './colors';
+import { QUICK_COLORS, withAlpha } from './colors';
 import { timeToLogical, logicalToTime, type ChartHandles } from './chartUtils';
 import { mainChart } from './mainChart';
 import { useStore, nextId } from '../store/store';
 import { useChartUi } from '../store/chartUi';
-import type { Candle, Drawing, DrawTool, Point } from '../types';
+import type { Candle, Drawing, DrawingPreset, DrawTool, LineStyleName, Point } from '../types';
 import { DEFAULT_TOOL_COLOR, LINE_STYLES, TOOL_INFO } from './toolInfo';
 import { defaultFib, fibOf, FIB_RETR_LINE, type FibTool } from './fibSettings';
 import FibDialog from './FibDialog';
 import HLineDialog from './HLineDialog';
 import { hlineLabel, hlineOf, isHLine, shownOnTf } from './hlineSettings';
 import VolumeProfileDialog from './VolumeProfileDialog';
-import { computeProfile, hexAlpha, isVolumeProfile, vpOf, vpRange } from './volumeProfile';
+import { computeProfile, isVolumeProfile, vpOf, vpRange } from './volumeProfile';
+import AvwapDialog from './AvwapDialog';
+import { avwapOf, avwapOperand, avwapSeries, bandOffset, sourcePrice } from './anchoredVwap';
 import { LOCALE } from '../i18n/lang';
+import DrawingDialog from './DrawingDialog';
+import { defaultFill, hasDrawingDialog, NO_STYLE, styleCaps } from './drawingStyle';
+import { ColorButton } from './ColorPicker';
+import { AlertIcon, BucketIcon, LockIcon, MoreIcon, PencilIcon, SettingsIcon, TemplatesIcon, TextIcon, TrashIcon } from './drawIcons';
 
 const HANDLE_R = 5;
 const HIT_TOLERANCE = 6;
@@ -64,6 +70,32 @@ function vpGeometry(d: Drawing, candles: Candle[], xOf: (t: number) => number | 
   return { x0: Math.min(xa, xb), x1: Math.max(xa, xb), yTop: Math.min(yTop, yBot), yBot: Math.max(yTop, yBot), p };
 }
 
+// an anchored VWAP on screen: the x of each bar from the anchor, the y of the VWAP and of the
+// bands shown (NaN off screen, where nothing is drawn), and the anchor's point on the VWAP
+function avwapGeometry(d: Drawing, candles: Candle[], xOf: (t: number) => number | null, yOf: (p: number) => number | null, width: number) {
+  const s = avwapOf(d);
+  const ser = avwapSeries(candles, d.points[0]?.time, s.source);
+  if (!ser) return null;
+  const n = ser.vwap.length;
+  const xs = new Array<number>(n);
+  for (let k = 0; k < n; k++) xs[k] = xOf(candles[ser.start + k].time) ?? NaN;
+  // the bars on screen, with one more on each side so the lines reach the edges
+  const shown = (k: number) => [k - 1, k, k + 1].some((j) => j >= 0 && j < n && xs[j] >= 0 && xs[j] <= width);
+  const line = (f: (k: number) => number) => {
+    const ys = new Array<number>(n);
+    for (let k = 0; k < n; k++) ys[k] = shown(k) ? yOf(f(k)) ?? NaN : NaN;
+    return ys;
+  };
+  const mid = line((k) => ser.vwap[k]);
+  const bands = s.bands.filter((b) => b.on).map((b) => ({
+    b,
+    up: line((k) => ser.vwap[k] + bandOffset(s, ser, k, b)),
+    lo: line((k) => ser.vwap[k] - bandOffset(s, ser, k, b)),
+  }));
+  const ay = yOf(ser.vwap[0]);
+  return { xs, mid, bands, anchor: Number.isFinite(xs[0]) && ay != null ? { x: xs[0], y: ay } : null };
+}
+
 // the x span of a horizontal line: from its point to the edge(s) it runs to
 function hlineSpan(d: Drawing, ax: number, width: number): { x0: number; x1: number } {
   const h = hlineOf(d);
@@ -107,6 +139,37 @@ function textBox(d: Drawing): { w: number; h: number; lines: string[]; size: num
   return { w, h: lines.length * size * 1.3, lines, size };
 }
 
+// a rectangle's 8 handles, like TradingView's: its two points (0, 1), the other corners (2: the
+// first point's time with the second's price, 3: the reverse), then the middles of its sides
+// (4, 5: the sides at each point's time; 6, 7: at each point's price)
+function rectHandles(a: XY, b: XY): XY[] {
+  const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+  return [a, b, { x: a.x, y: b.y }, { x: b.x, y: a.y }, { x: a.x, y: my }, { x: b.x, y: my }, { x: mx, y: a.y }, { x: mx, y: b.y }];
+}
+// the points once handle `i` is dragged to `pt`
+function moveRectHandle(points: Point[], i: number, pt: Point): Point[] {
+  const [p0, p1] = points;
+  switch (i) {
+    case 0: return [pt, p1];
+    case 1: return [p0, pt];
+    case 2: return [{ time: pt.time, price: p0.price }, { time: p1.time, price: pt.price }];
+    case 3: return [{ time: p0.time, price: pt.price }, { time: pt.time, price: p1.price }];
+    case 4: return [{ ...p0, time: pt.time }, p1];
+    case 5: return [p0, { ...p1, time: pt.time }];
+    case 6: return [{ ...p0, price: pt.price }, p1];
+    case 7: return [p0, { ...p1, price: pt.price }];
+    default: return points;
+  }
+}
+// a rectangle's box on screen, its sides run to the edges when asked
+function rectBox(d: Drawing, a: XY, b: XY, width: number) {
+  return { x0: d.extendLeft ? 0 : Math.min(a.x, b.x), x1: d.extendRight ? width : Math.max(a.x, b.x), y0: Math.min(a.y, b.y), y1: Math.max(a.y, b.y) };
+}
+
+// the style fields a template carries (besides colour, width and line style)
+const STYLE_KEYS = ['fib', 'fibLevels', 'riskReward', 'hline', 'vp', 'avwap', 'fontSize', 'fillColor', 'noFill', 'extendLeft', 'extendRight', 'textColor', 'bold', 'italic', 'textV', 'textH'] as const;
+const defined = <T extends object>(o: T): Partial<T> => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>;
+
 // a quantity that risks `amount` between entry and stop
 function riskQty(amount: number, entry: number, stop: number): number {
   const q = amount / Math.abs(entry - stop);
@@ -117,18 +180,16 @@ function riskQty(amount: number, entry: number, stop: number): number {
 }
 
 // style of a new drawing: the active preset's, else the tool's defaults
-function newDrawingStyle(tool: DrawTool): Pick<Drawing, 'color' | 'lineWidth' | 'lineStyle' | 'fibLevels' | 'riskReward' | 'hline' | 'vp'> {
+function newDrawingStyle(tool: DrawTool): Pick<Drawing, 'color' | 'lineWidth'> & Partial<Drawing> {
   const st = useStore.getState();
   const preset = st.activePresetId ? st.drawingPresets.find((p) => p.id === st.activePresetId && p.tool === tool) : undefined;
   const fib = tool === 'fib_retracement' ? FIB_RETR_LINE : null;
   return {
     color: preset?.color ?? fib?.color ?? DEFAULT_TOOL_COLOR[tool] ?? '#2962ff',
-    lineWidth: preset?.lineWidth ?? fib?.lineWidth ?? (isHLine(tool) || tool === 'text' ? 1 : 2),
-    lineStyle: preset?.lineStyle ?? fib?.lineStyle,
-    fibLevels: preset?.fibLevels,
-    riskReward: preset?.riskReward,
-    hline: preset?.hline,
-    vp: preset?.vp,
+    lineWidth: preset?.lineWidth ?? fib?.lineWidth ?? (isHLine(tool) || tool === 'text' || tool === 'anchored_vwap' ? 1 : 2),
+    ...defined({ lineStyle: preset?.lineStyle ?? fib?.lineStyle }),
+    // (only what the template sets: a text keeps its default size otherwise)
+    ...(preset ? defined(Object.fromEntries(STYLE_KEYS.map((k) => [k, preset[k]]))) : {}),
   };
 }
 
@@ -172,6 +233,13 @@ export default function DrawingLayer({
   const [fibDialogId, setFibDialogId] = useState<string | null>(null);
   const [hlineDialogId, setHlineDialogId] = useState<string | null>(null);
   const [vpDialogId, setVpDialogId] = useState<string | null>(null);
+  const [avwapDialogId, setAvwapDialogId] = useState<string | null>(null);
+  // rectangles and lines: TradingView's settings window
+  const [drawDialogId, setDrawDialogId] = useState<string | null>(null);
+  // the floating toolbar's open menu, for the drawing it was opened on (another one selected: closed)
+  const [menuOf, setMenuOf] = useState<{ id: string; kind: 'templates' | 'width' | 'style' | 'more' } | null>(null);
+  const menu = menuOf && menuOf.id === selectedDrawingId ? menuOf.kind : null;
+  const toggleMenu = (kind: 'templates' | 'width' | 'style' | 'more') => setMenuOf(menu === kind || !selectedDrawingId ? null : { id: selectedDrawingId, kind });
   const [, setFrame] = useState(0);
 
   // the drawing being placed and which of its points follows the mouse
@@ -180,7 +248,8 @@ export default function DrawingLayer({
   const selectingRef = useRef<Rect | null>(null);
   const dragRef = useRef<
     | { id: string; mode: 'point'; pointIndex: number }
-    | { mode: 'move'; startMouse: Point; start: { id: string; points: Point[] }[] }
+    // (moved by whole bars from where the mouse grabbed it: `logicals` are the points' bar indexes)
+    | { mode: 'move'; startMouse: Point; startLogical: number; start: { id: string; points: Point[]; logicals: (number | null)[] }[] }
     | null
   >(null);
   // text typed in place: its value before editing (to cancel) and the editor
@@ -188,6 +257,8 @@ export default function DrawingLayer({
   // the magnet's point under the mouse (drawn as a ring), null when nothing sticks
   const snapRef = useRef<Point | null>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
+  // the drawing's handle under the mouse (highlighted), and the cursor shown for it
+  const hoverRef = useRef<{ id: string; index: number } | null>(null);
 
   // times map through fractional bar indexes, so drawings keep their place on any
   // timeframe and can extend into the empty area right of the last bar
@@ -211,6 +282,15 @@ export default function DrawingLayer({
     return handles.current.mainSeries?.priceToCoordinate(p) ?? null;
   }
   const vpGeo = (d: Drawing) => vpGeometry(d, handles.current.candles, xOfTime, yOfPrice);
+  const avwapGeo = (d: Drawing) => avwapGeometry(d, handles.current.candles, xOfTime, yOfPrice, mainPaneSize().width);
+  // an anchored VWAP's anchor: the bar under the mouse (the last one right of it), at its VWAP's start
+  function anchorAt(clientX: number, d?: Drawing): Point | null {
+    const candles = handles.current.candles;
+    const l = mouseLogical(clientX);
+    if (l == null || !candles.length) return null;
+    const c = candles[Math.max(0, Math.min(candles.length - 1, Math.round(l)))];
+    return { time: c.time, price: sourcePrice(c, d ? avwapOf(d).source : 'hlc3') };
+  }
 
   // `snap`: placing or moving a point, where the magnet applies
   function toPoint(clientX: number, clientY: number, snap = false): Point | null {
@@ -228,6 +308,58 @@ export default function DrawingLayer({
     const time = logicalToTime(h.candles, logical);
     if (time === null) return null;
     return { time, price };
+  }
+
+  // the mouse's cursor over a drawing, like TradingView's: a rectangle's sides stretch up / down or
+  // left / right, its corners on a diagonal; a position's derived line goes up / down; the rest of
+  // a drawing moves. A locked one is only picked (a hand).
+  function cursorOf(d: Drawing, hit: Hit): string {
+    if (d.locked) return 'pointer';
+    if (hit.kind === 'body') return 'move';
+    if (d.tool === 'rectangle') {
+      if (hit.index === 4 || hit.index === 5) return 'ew-resize';
+      if (hit.index === 6 || hit.index === 7) return 'ns-resize';
+      const a = toXY(d.points[0]), b = toXY(d.points[1]);
+      if (!a || !b) return 'pointer';
+      const p = rectHandles(a, b)[hit.index];
+      // top-left / bottom-right on one diagonal, the other two on the other (y grows downwards)
+      return (p.x - (a.x + b.x) / 2) * (p.y - (a.y + b.y) / 2) > 0 ? 'nwse-resize' : 'nesw-resize';
+    }
+    if (isPosition(d.tool) && hit.index >= d.points.length) return 'ns-resize';
+    return 'pointer';
+  }
+  function hoverAt(e: MouseEvent) {
+    const el = containerRef.current;
+    if (!el) return;
+    let cursor = '';
+    let hover: { id: string; index: number } | null = null;
+    const overUi = (e.target as HTMLElement | null)?.closest?.('.draw-float-toolbar-wrap, .chart-ui, .draw-text-editor');
+    if (!overUi && inMainPlot(e.clientX, e.clientY)) {
+      const { x, y } = pxDist(e.clientX, e.clientY);
+      const found = findDrawingAt(x, y);
+      if (found) {
+        cursor = cursorOf(found.drawing, found.hit);
+        if (found.hit.kind === 'point' && !found.drawing.locked) hover = { id: found.drawing.id, index: found.hit.index };
+      }
+    }
+    hoverRef.current = hover;
+    if (el.style.cursor !== cursor) el.style.cursor = cursor;
+  }
+
+  // the bar index (fractional) under the mouse
+  function mouseLogical(clientX: number): number | null {
+    const h = handles.current;
+    const canvas = canvasRef.current;
+    if (!h.chart || !canvas) return null;
+    return h.chart.timeScale().coordinateToLogical(clientX - canvas.getBoundingClientRect().left) as number | null;
+  }
+  // a move of drawings grabbed at `pt`: their points as bar indexes, to shift them by whole bars
+  function moveDrag(pt: Point, clientX: number, list: Drawing[]) {
+    const candles = handles.current.candles;
+    return {
+      mode: 'move' as const, startMouse: pt, startLogical: mouseLogical(clientX) ?? NaN,
+      start: list.map((d) => ({ id: d.id, points: d.points.map((p) => ({ ...p })), logicals: d.points.map((p) => timeToLogical(candles, p.time)) })),
+    };
   }
 
   // TradingView's magnet: the open, high, low or close of the bar under the mouse nearest to it,
@@ -284,6 +416,13 @@ export default function DrawingLayer({
     const { width } = mainPaneSize();
     if (isHLine(d.tool)) { const sp = hlineSpan(d, pts[0].x, width); return { x0: sp.x0, x1: sp.x1, y0: pts[0].y - 2, y1: pts[0].y + 2 }; }
     if (isVolumeProfile(d.tool)) { const g = vpGeo(d); return g ? { x0: g.x0, x1: g.x1, y0: g.yTop, y1: g.yBot } : null; }
+    if (d.tool === 'anchored_vwap') {
+      const g = avwapGeo(d);
+      if (!g?.anchor) return null;
+      const ys = [g.mid, ...g.bands.flatMap((b) => [b.up, b.lo])].flat().filter(Number.isFinite);
+      const xs = g.xs.filter(Number.isFinite);
+      return { x0: g.anchor.x, x1: Math.max(...xs), y0: Math.min(g.anchor.y, ...ys), y1: Math.max(g.anchor.y, ...ys) };
+    }
     if (isText(d)) {
       const b = textBox(d);
       return { x0: pts[0].x, x1: pts[0].x + b.w, y0: pts[0].y - b.size, y1: pts[0].y - b.size + b.h };
@@ -324,6 +463,29 @@ export default function DrawingLayer({
         if (x != null && Math.hypot(mx - x, my - g.yBot) < 9) return { kind: 'point', index: i };
       }
       return mx >= g.x0 - 4 && mx <= g.x1 + 4 && my >= g.yTop - 4 && my <= g.yBot + 4 ? { kind: 'body' } : null;
+    }
+    if (d.tool === 'anchored_vwap') {
+      const g = avwapGeo(d);
+      if (!g) return null;
+      // its anchor, then the VWAP or a band near the mouse
+      if (g.anchor && Math.hypot(mx - g.anchor.x, my - g.anchor.y) < 9) return { kind: 'point', index: 0 };
+      for (const ys of [g.mid, ...g.bands.flatMap((b) => [b.up, b.lo])]) {
+        for (let k = 0; k + 1 < g.xs.length; k++) {
+          const x1 = g.xs[k], x2 = g.xs[k + 1];
+          if (!(mx >= Math.min(x1, x2) - HIT_TOLERANCE && mx <= Math.max(x1, x2) + HIT_TOLERANCE)) continue;
+          if (Number.isFinite(ys[k]) && Number.isFinite(ys[k + 1]) && distToSeg(mx, my, x1, ys[k], x2, ys[k + 1]) < HIT_TOLERANCE) return { kind: 'body' };
+        }
+      }
+      return null;
+    }
+    if (d.tool === 'rectangle') {
+      const a = pts[0], b = pts[1];
+      if (!a || !b) return null;
+      // its 8 handles, then its box (sides at the edge when prolonged)
+      const hs = rectHandles(a, b);
+      for (let i = 0; i < hs.length; i++) if (Math.hypot(mx - hs[i].x, my - hs[i].y) < 8) return { kind: 'point', index: i };
+      const r = rectBox(d, a, b, mainPaneSize().width);
+      return mx >= r.x0 - HIT_TOLERANCE && mx <= r.x1 + HIT_TOLERANCE && my >= r.y0 - HIT_TOLERANCE && my <= r.y1 + HIT_TOLERANCE ? { kind: 'body' } : null;
     }
     // the points first (a position's derived stop / target too)
     for (let i = 0; i < pts.length; i++) {
@@ -430,7 +592,7 @@ export default function DrawingLayer({
   useEffect(() => {
     function onDown(e: MouseEvent) {
       if (e.button !== 0) return;
-      if ((e.target as HTMLElement).closest('.chart-ui, .draw-float-toolbar-wrap, .draw-context-menu, .modal-backdrop, .sm-backdrop, .symbol-menu, .tb-dropdown-backdrop, .fav-bar, .presets-panel, .idg-backdrop, .draw-text-editor')) return;
+      if ((e.target as HTMLElement).closest('.chart-ui, .draw-float-toolbar-wrap, .draw-context-menu, .modal-backdrop, .sm-backdrop, .symbol-menu, .tb-dropdown-backdrop, .fav-bar, .presets-panel, .idg-backdrop, .draw-text-editor, .cp-pop, .cp-backdrop')) return;
       // picking the replay start bar: the click belongs to the chart
       if (useChartUi.getState().replay.mode === 'select') return;
       if (!inContainer(e.clientX, e.clientY)) return;
@@ -470,14 +632,17 @@ export default function DrawingLayer({
         e.preventDefault();
         // dragging one of several selected drawings moves them all
         if (found.hit.kind === 'body' && multiRef.current.includes(found.drawing.id)) {
-          const list = useStore.getState().drawings.filter((d) => multiRef.current.includes(d.id));
-          dragRef.current = { mode: 'move', startMouse: pt, start: list.map((d) => ({ id: d.id, points: d.points.map((p) => ({ ...p })) })) };
+          // (the locked ones stay where they are)
+          const list = useStore.getState().drawings.filter((d) => multiRef.current.includes(d.id) && !d.locked);
+          dragRef.current = moveDrag(pt, e.clientX, list);
           return;
         }
         if (multiRef.current.length) setMultiSel([]);
         setSelectedDrawingId(found.drawing.id);
+        // locked: selected (its toolbar opens), neither moved nor resized
+        if (found.drawing.locked) return;
         if (found.hit.kind === 'point') dragRef.current = { id: found.drawing.id, mode: 'point', pointIndex: found.hit.index };
-        else dragRef.current = { mode: 'move', startMouse: pt, start: [{ id: found.drawing.id, points: found.drawing.points.map((p) => ({ ...p })) }] };
+        else dragRef.current = moveDrag(pt, e.clientX, [found.drawing]);
         return;
       }
 
@@ -494,16 +659,28 @@ export default function DrawingLayer({
         const d: Drawing = { id: nextId(), tool: activeTool, points: [at], ...newDrawingStyle(activeTool), done: true, ticker: symTicker, tf: useStore.getState().timeframe };
         addDrawing(d);
         // the lines from a point stay selected: their settings are a click away
-        if (activeTool !== 'horizontal_line') setSelectedDrawingId(d.id);
+        // (back to the cursor first: picking a tool clears the selection)
         setActiveTool('cursor');
+        if (activeTool !== 'horizontal_line') setSelectedDrawingId(d.id);
         return;
       }
       if (activeTool === 'anchored_vp') {
         // one click: from this bar to the last one
         const d: Drawing = { id: nextId(), tool: 'anchored_vp', points: [pt], ...newDrawingStyle('anchored_vp'), done: true, ticker: symTicker };
         addDrawing(d);
-        setSelectedDrawingId(d.id);
         setActiveTool('cursor');
+        setSelectedDrawingId(d.id);
+        return;
+      }
+      if (activeTool === 'anchored_vwap') {
+        // one click: the anchor bar, the VWAP runs from it to the last one
+        const at = anchorAt(e.clientX);
+        if (!at) return;
+        const style = newDrawingStyle('anchored_vwap');
+        const d: Drawing = { id: nextId(), tool: 'anchored_vwap', points: [at], ...style, done: true, ticker: symTicker, tf: useStore.getState().timeframe };
+        addDrawing(d);
+        setActiveTool('cursor');
+        setSelectedDrawingId(d.id);
         return;
       }
       if (activeTool === 'alert') {
@@ -532,7 +709,8 @@ export default function DrawingLayer({
         const style = newDrawingStyle(activeTool);
         const n = activeTool === 'position_3pt' ? 3 : 2;
         const d: Drawing = { id: nextId(), tool: activeTool, points: Array.from({ length: n }, () => ({ ...pt })), ...style, done: false, ticker: symTicker };
-        if (isFib(activeTool)) d.fib = defaultFib(activeTool);
+        // (a template's Fibo settings, else the defaults)
+        if (isFib(activeTool)) d.fib = style.fib ? structuredClone(style.fib) : defaultFib(activeTool);
         if (activeTool === 'long_position' || activeTool === 'short_position') d.riskReward = style.riskReward ?? 1;
         if (activeTool === 'position_rr') d.riskReward = style.riskReward ?? useStore.getState().positionRR;
         pendingRef.current = { d, stage: 1 };
@@ -550,8 +728,9 @@ export default function DrawingLayer({
       }
       updateDrawing(d.id, { points: pts, done: true });
       pendingRef.current = null;
-      setSelectedDrawingId(d.id);
+      // the drawing just placed stays selected, its toolbar open (like TradingView)
       setActiveTool('cursor');
+      setSelectedDrawingId(d.id);
     }
 
     function selectedDrawingIdNow() { return useStore.getState().selectedDrawingId; }
@@ -563,6 +742,8 @@ export default function DrawingLayer({
         setFrame((n) => n + 1);
         return;
       }
+      // pointing at drawings: the cursor tells what a drag would do (it stays as it is while dragging)
+      if (!dragRef.current && activeTool === 'cursor') hoverAt(e);
       if (dragRef.current) {
         const pt = toPoint(e.clientX, e.clientY, dragRef.current.mode === 'point');
         if (!pt) return;
@@ -571,6 +752,13 @@ export default function DrawingLayer({
         if (drag.mode === 'point') {
           const d = list.find((x) => x.id === drag.id);
           if (!d) return;
+          if (d.tool === 'rectangle') { updateDrawing(d.id, { points: moveRectHandle(d.points, drag.pointIndex, pt) }); return; }
+          // the anchored VWAP's anchor goes bar by bar, the VWAP following it
+          if (d.tool === 'anchored_vwap') {
+            const at = anchorAt(e.clientX, d);
+            if (at && at.time !== d.points[0]?.time) updateDrawing(d.id, { points: [at] });
+            return;
+          }
           if (drag.pointIndex >= d.points.length) {
             // a position's derived line: the R:R follows it
             const lv = positionLevels(d);
@@ -588,9 +776,21 @@ export default function DrawingLayer({
           newPoints[drag.pointIndex] = pt;
           updateDrawing(d.id, { points: newPoints });
         } else {
-          const dt = pt.time - drag.startMouse.time;
+          // by whole bars, like TradingView: a move in seconds stretched the drawings, as a bar spans
+          // a night or a week-end on the chart but an hour in the empty area right of the last bar
+          const candles = handles.current.candles;
+          const ml = mouseLogical(e.clientX);
+          const dl = ml == null || !Number.isFinite(drag.startLogical) ? 0 : Math.round(ml - drag.startLogical);
           const dp = pt.price - drag.startMouse.price;
-          for (const s of drag.start) updateDrawing(s.id, { points: s.points.map((p) => ({ time: p.time + dt, price: p.price + dp })) });
+          for (const s of drag.start) {
+            updateDrawing(s.id, {
+              points: s.points.map((p, k) => {
+                const l = s.logicals[k];
+                const t = l == null ? null : logicalToTime(candles, l + dl);
+                return { time: t ?? p.time, price: p.price + dp };
+              }),
+            });
+          }
         }
         return;
       }
@@ -655,6 +855,8 @@ export default function DrawingLayer({
       else if (isFib(found.drawing.tool)) { e.stopPropagation(); e.preventDefault(); setFibDialogId(found.drawing.id); }
       else if (isHLine(found.drawing.tool)) { e.stopPropagation(); e.preventDefault(); setHlineDialogId(found.drawing.id); }
       else if (isVolumeProfile(found.drawing.tool)) { e.stopPropagation(); e.preventDefault(); setVpDialogId(found.drawing.id); }
+      else if (found.drawing.tool === 'anchored_vwap') { e.stopPropagation(); e.preventDefault(); setAvwapDialogId(found.drawing.id); }
+      else if (hasDrawingDialog(found.drawing)) { e.stopPropagation(); e.preventDefault(); setDrawDialogId(found.drawing.id); }
     }
 
     function onContextMenu(e: MouseEvent) {
@@ -742,6 +944,23 @@ export default function DrawingLayer({
     if (el) el.style.cursor = activeTool === 'cursor' ? '' : activeTool === 'text' ? 'text' : 'crosshair';
   }, [activeTool, containerRef]);
 
+  // an anchored VWAP whose anchor is before the bars loaded (drawn on a higher timeframe):
+  // older history is paged in, once per anchor (it is not drawn until the bars reach it)
+  const dataVersion = useChartUi((s) => s.dataVersion);
+  const pagedRef = useRef(new Set<string>());
+  useEffect(() => {
+    const first = handles.current.candles[0]?.time;
+    if (first == null || !mainChart.loadBefore || handles.current !== mainChart.engine) return;
+    const anchors = drawings.filter((d) => d.tool === 'anchored_vwap' && d.points[0] && d.points[0].time < first).map((d) => d.points[0].time);
+    if (!anchors.length) return;
+    const oldest = Math.min(...anchors);
+    const key = `${ticker}|${timeframe}|${oldest}`;
+    if (pagedRef.current.has(key)) return;
+    pagedRef.current.add(key);
+    void mainChart.loadBefore(oldest);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allDrawings, ticker, timeframe, dataVersion]);
+
   // render loop
   useEffect(() => {
     let raf = 0;
@@ -782,7 +1001,8 @@ export default function DrawingLayer({
         ctx.clip();
         for (const d of drawings) {
           if (d.id === editing) continue;
-          renderDrawing(ctx, d, rc, d.id === selectedDrawingId || multiRef.current.includes(d.id));
+          const hv = hoverRef.current;
+          renderDrawing(ctx, d, rc, d.id === selectedDrawingId || multiRef.current.includes(d.id), hv && hv.id === d.id ? hv.index : null);
         }
         // the magnet's point: a ring where the next point will stick
         const snap = snapRef.current && st.magnet !== 'off' && (st.activeTool !== 'cursor' || dragRef.current) ? toXY(snapRef.current) : null;
@@ -816,7 +1036,7 @@ export default function DrawingLayer({
             toolbar.style.display = 'flex';
             const toolbarH = toolbar.offsetHeight || 40;
             const fitsBelow = b.y1 + 10 + toolbarH <= pane.height;
-            toolbar.style.left = `${Math.max(4, Math.min(b.x0, w - 300))}px`;
+            toolbar.style.left = `${Math.max(4, Math.min(b.x0, w - (toolbar.offsetWidth || 300) - 4))}px`;
             toolbar.style.top = fitsBelow ? `${b.y1 + 10}px` : `${Math.max(4, b.y0 - toolbarH - 10)}px`;
           } else {
             toolbar.style.display = 'none';
@@ -835,6 +1055,61 @@ export default function DrawingLayer({
   const editing = editTextId ? drawings.find((d) => d.id === editTextId) : null;
   const editXY = editing ? toXY(editing.points[0]) : null;
   const selectedLv = selectedDrawing && isPosition(selectedDrawing.tool) ? positionLevels(selectedDrawing) : null;
+  const rectSel = selectedDrawing?.tool === 'rectangle';
+  const vpSel = !!selectedDrawing && isVolumeProfile(selectedDrawing.tool);
+  // only the colour, width and line style the drawing uses
+  const caps = selectedDrawing ? styleCaps(selectedDrawing.tool) : NO_STYLE;
+  const drawingPresets = useStore((s) => s.drawingPresets);
+  const presetsOfTool = selectedDrawing ? drawingPresets.filter((p) => p.tool === selectedDrawing.tool) : [];
+
+  // a template's style on this drawing (its points and text stay)
+  function applyPreset(d: Drawing, p: DrawingPreset) {
+    // (a template from before the Fibo settings were saved keeps the drawing's levels)
+    const keys = STYLE_KEYS.filter((k) => k !== 'fib' || p.fib);
+    updateDrawing(d.id, { color: p.color, lineWidth: p.lineWidth, lineStyle: p.lineStyle, ...Object.fromEntries(keys.map((k) => [k, k === 'fib' ? structuredClone(p.fib) : p[k]])) });
+  }
+  // the colour of a drawing; a Fibo's is all its levels'
+  function setColor(d: Drawing, color: string) {
+    updateDrawing(d.id, isFib(d.tool) ? { color, fib: { ...fibOf(d), oneColor: true } } : { color });
+  }
+  function savePreset(d: Drawing) {
+    const name = window.prompt('Nom du modèle :', `${TOOL_INFO[d.tool].label} ${d.color}`);
+    if (!name) return;
+    useStore.getState().addDrawingPreset({
+      id: nextId(), name, tool: d.tool, color: d.color, lineWidth: d.lineWidth, lineStyle: d.lineStyle,
+      ...structuredClone(defined(Object.fromEntries(STYLE_KEYS.map((k) => [k, d[k]])))),
+    });
+    useChartUi.getState().showToast(`Modèle « ${name} » enregistré dans les favoris ★`);
+  }
+  // TradingView's "add alert" of a drawing: a rectangle, the price entering its zone; a line or an
+  // anchored VWAP, crossing it (the VWAP's bands can be picked in the window)
+  function alertOnDrawing(d: Drawing) {
+    const round = (v: number) => Number(v.toFixed(handles.current.precision));
+    const price = { kind: 'price' as const };
+    if (d.tool === 'anchored_vwap') {
+      useChartUi.getState().openAlert({ conditions: [{ left: price, op: 'cross', right: avwapOperand(d, 'vwap') }] });
+    } else if (d.tool === 'rectangle') {
+      const [a, b] = d.points;
+      useChartUi.getState().openAlert({ conditions: [{ left: price, op: 'enter', right: { kind: 'value', value: round(Math.min(a.price, b.price)) }, right2: { kind: 'value', value: round(Math.max(a.price, b.price)) } }] });
+    } else {
+      useChartUi.getState().openAlert({ conditions: [{ left: price, op: 'cross', right: { kind: 'value', value: round(d.points[0].price) } }] });
+    }
+  }
+  // a copy in the same place, selected (to be moved), never locked
+  function cloneDrawing(d: Drawing) {
+    const copy: Drawing = { ...structuredClone(d), id: nextId(), locked: false };
+    addDrawing(copy);
+    setSelectedDrawingId(copy.id);
+  }
+  // above or under the other drawings (they are drawn in the list's order)
+  function reorderDrawing(id: string, front: boolean) {
+    useStore.setState((st) => {
+      const d = st.drawings.find((x) => x.id === id);
+      if (!d) return st;
+      const rest = st.drawings.filter((x) => x.id !== id);
+      return { drawings: front ? [...rest, d] : [d, ...rest] };
+    });
+  }
   const toolHint = activeTool === 'position_3pt' ? 'Position : cliquez l’entrée, puis le stop, puis l’objectif'
     : activeTool === 'position_rr' ? 'Position à R:R fixe : cliquez l’entrée, puis le stop'
       : activeTool === 'text' ? 'Cliquez où écrire, puis tapez le texte (Entrée pour valider, Maj + Entrée pour aller à la ligne)'
@@ -889,16 +1164,46 @@ export default function DrawingLayer({
       )}
       {selectedDrawing && (
         <div ref={toolbarRef} className="draw-float-toolbar-wrap" style={{ display: 'none' }}>
-          <div className="draw-float-toolbar">
-            {COLOR_PALETTE.map((c) => (
-              <button
-                key={c}
-                className={`ctx-color ${selectedDrawing.color === c ? 'selected' : ''}`}
-                style={{ background: c }}
-                onClick={() => updateDrawing(selectedDrawing.id, { color: c })}
-              />
-            ))}
-            <div className="ctx-sep-v" />
+          <div className="draw-float-toolbar dtb">
+            {/* templates: the tool's saved styles, and saving this one */}
+            <div className="dtb-host">
+              <button className={`dtb-btn ${menu === 'templates' ? 'on' : ''}`} title="Modèles" onClick={() => toggleMenu('templates')}><TemplatesIcon /></button>
+              {menu === 'templates' && (
+                <div className="dtb-menu">
+                  {presetsOfTool.map((p) => <button key={p.id} className="dtb-item" onClick={() => { applyPreset(selectedDrawing, p); setMenuOf(null); }}>{p.name}</button>)}
+                  {!presetsOfTool.length && <div className="dtb-empty">Aucun modèle pour cet outil</div>}
+                  <div className="dtb-sep" />
+                  <button className="dtb-item" onClick={() => { setMenuOf(null); savePreset(selectedDrawing); }}>Enregistrer le style comme modèle…</button>
+                </div>
+              )}
+            </div>
+            {caps.color && (
+              <ColorButton
+                value={selectedDrawing.color}
+                title={isText(selectedDrawing) ? 'Couleur du texte' : rectSel ? 'Couleur de la bordure' : isFib(selectedDrawing.tool) ? 'Couleur de tous les niveaux' : 'Couleur de la ligne'}
+                onChange={(color) => setColor(selectedDrawing, color)}
+              >
+                {isText(selectedDrawing) ? <TextIcon /> : <PencilIcon />}
+              </ColorButton>
+            )}
+            {vpSel && (
+              <ColorButton
+                value={vpOf(selectedDrawing).bgColor} title="Couleur et opacité du fond (les autres couleurs : bouton Paramètres)"
+                onChange={(bgColor) => updateDrawing(selectedDrawing.id, { vp: { ...selectedDrawing.vp, bgColor, background: true } })}
+              >
+                <BucketIcon />
+              </ColorButton>
+            )}
+            {rectSel && (
+              <ColorButton value={selectedDrawing.noFill ? 'transparent' : selectedDrawing.fillColor ?? defaultFill(selectedDrawing.color)} title="Couleur et opacité du fond" onChange={(fillColor) => updateDrawing(selectedDrawing.id, { fillColor, noFill: false })}>
+                <BucketIcon />
+              </ColorButton>
+            )}
+            {rectSel && (
+              <ColorButton value={selectedDrawing.textColor ?? selectedDrawing.color} title="Couleur du texte (le texte s’écrit dans les paramètres, ou double-clic)" onChange={(textColor) => updateDrawing(selectedDrawing.id, { textColor })}>
+                <TextIcon />
+              </ColorButton>
+            )}
             {isText(selectedDrawing) ? (
               <>
                 <button className="float-btn" title="Texte plus petit" onClick={() => updateDrawing(selectedDrawing.id, { fontSize: Math.max(8, (selectedDrawing.fontSize ?? TEXT_SIZE) - 2) })}>−</button>
@@ -908,28 +1213,50 @@ export default function DrawingLayer({
               </>
             ) : (
               <>
-                <button className="float-btn" onClick={() => updateDrawing(selectedDrawing.id, { lineWidth: Math.max(1, selectedDrawing.lineWidth - 1) })}>−</button>
-                <span className="float-width">{selectedDrawing.lineWidth}px</span>
-                <button className="float-btn" onClick={() => updateDrawing(selectedDrawing.id, { lineWidth: Math.min(6, selectedDrawing.lineWidth + 1) })}>+</button>
-                <button
-                  className="float-btn" title="Style de trait"
-                  onClick={() => {
-                    const i = LINE_STYLES.findIndex((l) => l.id === (selectedDrawing.lineStyle ?? 'solid'));
-                    updateDrawing(selectedDrawing.id, { lineStyle: LINE_STYLES[(i + 1) % LINE_STYLES.length].id });
-                  }}
-                >
-                  {LINE_STYLES.find((l) => l.id === (selectedDrawing.lineStyle ?? 'solid'))?.glyph}
-                </button>
+                {caps.width && <div className="dtb-host">
+                  <button className={`dtb-btn dtb-wide ${menu === 'width' ? 'on' : ''}`} title="Épaisseur" onClick={() => toggleMenu('width')}>
+                    <span className="dtb-line" style={{ height: Math.min(4, selectedDrawing.lineWidth) }} />{selectedDrawing.lineWidth}px
+                  </button>
+                  {menu === 'width' && (
+                    <div className="dtb-menu">
+                      {[1, 2, 3, 4].map((w) => (
+                        <button key={w} className={`dtb-item ${selectedDrawing.lineWidth === w ? 'on' : ''}`} onClick={() => { updateDrawing(selectedDrawing.id, { lineWidth: w }); setMenuOf(null); }}>
+                          <span className="dtb-line" style={{ height: w }} />{w}px
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>}
+                {caps.style && <div className="dtb-host">
+                  <button className={`dtb-btn ${menu === 'style' ? 'on' : ''}`} title="Style de trait" onClick={() => toggleMenu('style')}>
+                    <LineGlyph style={selectedDrawing.lineStyle ?? 'solid'} />
+                  </button>
+                  {menu === 'style' && (
+                    <div className="dtb-menu">
+                      {LINE_STYLES.map((l) => (
+                        <button key={l.id} className={`dtb-item ${(selectedDrawing.lineStyle ?? 'solid') === l.id ? 'on' : ''}`} onClick={() => { updateDrawing(selectedDrawing.id, { lineStyle: l.id }); setMenuOf(null); }}>
+                          <LineGlyph style={l.id} />{l.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>}
               </>
             )}
             {isFib(selectedDrawing.tool) && (
-              <button className="float-btn" title="Paramètres (ou double-clic sur le Fibo)" onClick={() => setFibDialogId(selectedDrawing.id)}>⚙</button>
+              <button className="dtb-btn" title="Paramètres (ou double-clic sur le Fibo)" onClick={() => setFibDialogId(selectedDrawing.id)}><SettingsIcon /></button>
             )}
             {isVolumeProfile(selectedDrawing.tool) && (
-              <button className="float-btn" title="Paramètres : lignes, zone de valeur, couleurs… (ou double-clic sur le profil)" onClick={() => setVpDialogId(selectedDrawing.id)}>⚙</button>
+              <button className="dtb-btn" title="Paramètres : lignes, zone de valeur, couleurs… (ou double-clic sur le profil)" onClick={() => setVpDialogId(selectedDrawing.id)}><SettingsIcon /></button>
+            )}
+            {selectedDrawing.tool === 'anchored_vwap' && (
+              <button className="dtb-btn" title="Paramètres : bandes, source, couleurs… (ou double-clic sur le VWAP)" onClick={() => setAvwapDialogId(selectedDrawing.id)}><SettingsIcon /></button>
             )}
             {isHLine(selectedDrawing.tool) && (
-              <button className="float-btn" title="Paramètres : extension, texte, prix, écart… (ou double-clic sur la ligne)" onClick={() => setHlineDialogId(selectedDrawing.id)}>⚙</button>
+              <button className="dtb-btn" title="Paramètres : extension, texte, prix, écart… (ou double-clic sur la ligne)" onClick={() => setHlineDialogId(selectedDrawing.id)}><SettingsIcon /></button>
+            )}
+            {hasDrawingDialog(selectedDrawing) && (
+              <button className="dtb-btn" title="Paramètres : style, texte, coordonnées, visibilité (ou double-clic)" onClick={() => setDrawDialogId(selectedDrawing.id)}><SettingsIcon /></button>
             )}
             {(selectedDrawing.tool === 'position_rr' || selectedDrawing.tool === 'long_position' || selectedDrawing.tool === 'short_position') && (
               <label className="fib-check" title="Ratio gain / risque">R:R
@@ -953,44 +1280,69 @@ export default function DrawingLayer({
                 <input type="number" min={0.1} step={0.1} value={positionRiskPct} className="fib-rr-input" onChange={(e) => setPositionTool({ positionRiskPct: Math.max(0.01, parseFloat(e.target.value) || 1) })} />%
               </label>
             )}
-            <div className="ctx-sep-v" />
+            {(rectSel || isHLine(selectedDrawing.tool) || selectedDrawing.tool === 'anchored_vwap') && (
+              <button
+                className="dtb-btn"
+                title={rectSel ? 'Créer une alerte : le prix entre dans la zone'
+                  : selectedDrawing.tool === 'anchored_vwap' ? 'Créer une alerte : le prix croise le VWAP ou une de ses bandes'
+                    : 'Créer une alerte : le prix croise la ligne'}
+                onClick={() => alertOnDrawing(selectedDrawing)}
+              ><AlertIcon /></button>
+            )}
             <button
-              className="float-btn" title="Enregistrer ce style comme modèle (ajouté aux favoris)"
-              onClick={() => {
-                const d = selectedDrawing;
-                const name = window.prompt('Nom du modèle :', `${TOOL_INFO[d.tool].label} ${d.color}`);
-                if (!name) return;
-                useStore.getState().addDrawingPreset({
-                  id: nextId(), name, tool: d.tool, color: d.color, lineWidth: d.lineWidth, lineStyle: d.lineStyle,
-                  fibLevels: d.fibLevels, riskReward: d.riskReward, hline: d.hline, vp: d.vp,
-                });
-                useChartUi.getState().showToast(`Modèle « ${name} » enregistré dans les favoris ★`);
-              }}
+              className={`dtb-btn ${selectedDrawing.locked ? 'on' : ''}`} title={selectedDrawing.locked ? 'Déverrouiller' : 'Verrouiller (le dessin ne bouge plus)'}
+              onClick={() => updateDrawing(selectedDrawing.id, { locked: !selectedDrawing.locked })}
             >
-              ☆
+              <LockIcon locked={!!selectedDrawing.locked} />
             </button>
-            <button className="float-btn danger" title="Supprimer (Suppr)" onClick={() => removeSelected()}>🗑</button>
+            <button className="dtb-btn danger" title="Supprimer (Suppr)" onClick={() => removeSelected()}><TrashIcon /></button>
+            <div className="dtb-host">
+              <button className={`dtb-btn ${menu === 'more' ? 'on' : ''}`} title="Plus" onClick={() => toggleMenu('more')}><MoreIcon /></button>
+              {menu === 'more' && (
+                <div className="dtb-menu dtb-menu-right">
+                  <button className="dtb-item" onClick={() => { setMenuOf(null); cloneDrawing(selectedDrawing); }}>Cloner</button>
+                  <button className="dtb-item" onClick={() => { setMenuOf(null); reorderDrawing(selectedDrawing.id, true); }}>Mettre au premier plan</button>
+                  <button className="dtb-item" onClick={() => { setMenuOf(null); reorderDrawing(selectedDrawing.id, false); }}>Mettre en arrière-plan</button>
+                  <div className="dtb-sep" />
+                  <button className="dtb-item" onClick={() => { setMenuOf(null); savePreset(selectedDrawing); }}>Enregistrer le style comme modèle…</button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
+      {drawDialogId && <DrawingDialog id={drawDialogId} onClose={() => setDrawDialogId(null)} />}
       {fibDialogId && <FibDialog id={fibDialogId} onClose={() => setFibDialogId(null)} />}
       {hlineDialogId && <HLineDialog id={hlineDialogId} onClose={() => setHlineDialogId(null)} />}
       {vpDialogId && <VolumeProfileDialog id={vpDialogId} onClose={() => setVpDialogId(null)} />}
+      {avwapDialogId && <AvwapDialog id={avwapDialogId} onClose={() => setAvwapDialogId(null)} />}
       {contextMenu && activeDrawing && (
         <div className="draw-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onMouseLeave={() => setContextMenu(null)}>
-          <div className="ctx-title">Couleur</div>
-          <div className="ctx-colors">
-            {COLOR_PALETTE.map((c) => (
-              <button key={c} className="ctx-color" style={{ background: c }} onClick={() => { updateDrawing(activeDrawing.id, { color: c }); setContextMenu(null); }} />
-            ))}
-          </div>
-          <div className="ctx-sep" />
+          {styleCaps(activeDrawing.tool).color && (
+            <>
+              <div className="ctx-title">{isFib(activeDrawing.tool) ? 'Couleur des niveaux' : 'Couleur'}</div>
+              <div className="ctx-colors">
+                {COLOR_PALETTE.map((c) => (
+                  <button key={c} className="ctx-color" style={{ background: c }} onClick={() => { setColor(activeDrawing, c); setContextMenu(null); }} />
+                ))}
+              </div>
+              <div className="ctx-sep" />
+            </>
+          )}
           {isText(activeDrawing) && <button className="ctx-item" onClick={() => { startEditing(activeDrawing); setContextMenu(null); }}>Modifier le texte</button>}
           {isFib(activeDrawing.tool) && <button className="ctx-item" onClick={() => { setFibDialogId(activeDrawing.id); setContextMenu(null); }}>Paramètres…</button>}
           {isHLine(activeDrawing.tool) && <button className="ctx-item" onClick={() => { setHlineDialogId(activeDrawing.id); setContextMenu(null); }}>Paramètres…</button>}
           {isVolumeProfile(activeDrawing.tool) && <button className="ctx-item" onClick={() => { setVpDialogId(activeDrawing.id); setContextMenu(null); }}>Paramètres…</button>}
-          <button className="ctx-item" onClick={() => { updateDrawing(activeDrawing.id, { lineWidth: Math.min(6, activeDrawing.lineWidth + 1) }); }}>Épaisseur +</button>
-          <button className="ctx-item" onClick={() => { updateDrawing(activeDrawing.id, { lineWidth: Math.max(1, activeDrawing.lineWidth - 1) }); }}>Épaisseur −</button>
+          {activeDrawing.tool === 'anchored_vwap' && <button className="ctx-item" onClick={() => { setAvwapDialogId(activeDrawing.id); setContextMenu(null); }}>Paramètres…</button>}
+          {hasDrawingDialog(activeDrawing) && <button className="ctx-item" onClick={() => { setDrawDialogId(activeDrawing.id); setContextMenu(null); }}>Paramètres…</button>}
+          <button className="ctx-item" onClick={() => { updateDrawing(activeDrawing.id, { locked: !activeDrawing.locked }); setContextMenu(null); }}>{activeDrawing.locked ? 'Déverrouiller' : 'Verrouiller'}</button>
+          <button className="ctx-item" onClick={() => { cloneDrawing(activeDrawing); setContextMenu(null); }}>Cloner</button>
+          {styleCaps(activeDrawing.tool).width && (
+            <>
+              <button className="ctx-item" onClick={() => { updateDrawing(activeDrawing.id, { lineWidth: Math.min(6, activeDrawing.lineWidth + 1) }); }}>Épaisseur +</button>
+              <button className="ctx-item" onClick={() => { updateDrawing(activeDrawing.id, { lineWidth: Math.max(1, activeDrawing.lineWidth - 1) }); }}>Épaisseur −</button>
+            </>
+          )}
           <div className="ctx-sep" />
           <button className="ctx-item danger" onClick={() => { removeDrawing(activeDrawing.id); setContextMenu(null); }}>Supprimer</button>
         </div>
@@ -999,14 +1351,32 @@ export default function DrawingLayer({
   );
 }
 
-function hexToRgba(hex: string, alpha: number) {
-  const m = /^#?([0-9a-f]{6})$/i.exec(hex);
-  if (!m) return hex;
-  const n = parseInt(m[1], 16);
-  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+// a rectangle's text, inside its box at the chosen place
+function boxText(ctx: CanvasRenderingContext2D, d: Drawing, r: { x0: number; x1: number; y0: number; y1: number }) {
+  const size = d.fontSize ?? TEXT_SIZE;
+  const lines = (d.text ?? '').split('\n');
+  const lh = size * 1.3, pad = 6, total = lines.length * lh;
+  const h = d.textH ?? 'center', v = d.textV ?? 'middle';
+  ctx.save();
+  ctx.font = `${d.italic ? 'italic ' : ''}${d.bold ? 'bold ' : ''}${size}px sans-serif`;
+  ctx.fillStyle = d.textColor ?? d.color;
+  ctx.textAlign = h;
+  ctx.textBaseline = 'middle';
+  const x = h === 'left' ? r.x0 + pad : h === 'right' ? r.x1 - pad : (r.x0 + r.x1) / 2;
+  let y = (v === 'top' ? r.y0 + pad : v === 'bottom' ? r.y1 - pad - total : (r.y0 + r.y1) / 2 - total / 2) + lh / 2;
+  for (const l of lines) { ctx.fillText(l, x, y); y += lh; }
+  ctx.restore();
 }
 
-function renderDrawing(ctx: CanvasRenderingContext2D, d: Drawing, rc: RenderCtx, selected: boolean) {
+// a line's style drawn small (the toolbar's style button and menu)
+function LineGlyph({ style }: { style: LineStyleName }) {
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18"><path d="M2 9h14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeDasharray={style === 'dashed' ? '4 3' : style === 'dotted' ? '0.5 3' : undefined} /></svg>
+  );
+}
+
+// `hover`: the index of its handle under the mouse (rectangles), null when none
+function renderDrawing(ctx: CanvasRenderingContext2D, d: Drawing, rc: RenderCtx, selected: boolean, hover: number | null = null) {
   const { toXY, width, height, precision } = rc;
   const fmt = (v: number) => v.toFixed(precision);
   const baseDash = DASH[d.lineStyle ?? ''] ?? [];
@@ -1098,11 +1468,37 @@ function renderDrawing(ctx: CanvasRenderingContext2D, d: Drawing, rc: RenderCtx,
   } else if (d.tool === 'rectangle') {
     const a = toXY(d.points[0]), b = toXY(d.points[1]);
     if (!a || !b) return ctx.restore();
-    ctx.globalAlpha = 0.15;
-    ctx.fillRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
-    ctx.globalAlpha = 1;
-    ctx.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
-    drawHandles([a, b]);
+    const r = rectBox(d, a, b, width);
+    // the background: its own colour (with its opacity), else the line's at 15 %
+    if (!d.noFill) {
+      if (d.fillColor) ctx.fillStyle = d.fillColor;
+      else ctx.globalAlpha = 0.15;
+      ctx.fillRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+      ctx.globalAlpha = 1;
+    }
+    ctx.strokeRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+    if (d.text) boxText(ctx, d, r);
+    const hs = rectHandles(a, b);
+    drawHandles(hs.slice(0, 4));
+    // the middles of the sides: small squares, like TradingView's
+    if (selected) {
+      ctx.save();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#0e1117';
+      ctx.strokeStyle = '#2962ff';
+      ctx.lineWidth = 1.5;
+      for (const p of hs.slice(4)) { ctx.fillRect(p.x - 4, p.y - 4, 8, 8); ctx.strokeRect(p.x - 4, p.y - 4, 8, 8); }
+      // the handle under the mouse: larger, with a halo (TradingView's)
+      const p = hover != null ? hs[hover] : null;
+      if (p) {
+        ctx.fillStyle = 'rgba(41, 98, 255, 0.25)';
+        ctx.beginPath(); ctx.arc(p.x, p.y, 10, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#0e1117';
+        if (hover! < 4) { ctx.beginPath(); ctx.arc(p.x, p.y, HANDLE_R + 1, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); }
+        else { ctx.fillRect(p.x - 5, p.y - 5, 10, 10); ctx.strokeRect(p.x - 5, p.y - 5, 10, 10); }
+      }
+      ctx.restore();
+    }
   } else if (d.tool === 'brush') {
     const pts = d.points.map(toXY).filter(Boolean) as { x: number; y: number }[];
     if (pts.length < 2) return ctx.restore();
@@ -1117,7 +1513,8 @@ function renderDrawing(ctx: CanvasRenderingContext2D, d: Drawing, rc: RenderCtx,
     const p = g.p;
     const w = Math.max(1, g.x1 - g.x0);
     ctx.setLineDash([]);
-    if (s.background) { ctx.fillStyle = hexAlpha(s.bgColor, 0.07); ctx.fillRect(g.x0, g.yTop, w, g.yBot - g.yTop); }
+    // (its opacity is the colour's)
+    if (s.background) { ctx.fillStyle = s.bgColor; ctx.fillRect(g.x0, g.yTop, w, g.yBot - g.yTop); }
     // rows from the left (or right) edge of the range, their length by their volume;
     // brighter inside the value area
     const hw = (w * s.width) / 100;
@@ -1135,9 +1532,9 @@ function renderDrawing(ctx: CanvasRenderingContext2D, d: Drawing, rc: RenderCtx,
       const alpha = r >= p.vaLo && r <= p.vaHi ? 0.8 : 0.35;
       if (s.split) {
         const wu = (p.up[r] / p.max) * hw;
-        bar(0, wu, top, h, hexAlpha(s.upColor, alpha));
-        bar(wu, (p.down[r] / p.max) * hw, top, h, hexAlpha(s.downColor, alpha));
-      } else bar(0, (total / p.max) * hw, top, h, hexAlpha(s.upColor, alpha));
+        bar(0, wu, top, h, withAlpha(s.upColor, alpha));
+        bar(wu, (p.down[r] / p.max) * hw, top, h, withAlpha(s.downColor, alpha));
+      } else bar(0, (total / p.max) * hw, top, h, withAlpha(s.upColor, alpha));
     }
     const line = (price: number, x1: number, color: string, dash: number[], lw: number) => {
       const y = rc.yOf(price);
@@ -1161,6 +1558,48 @@ function renderDrawing(ctx: CanvasRenderingContext2D, d: Drawing, rc: RenderCtx,
       ctx.strokeRect(g.x0, g.yTop, w, g.yBot - g.yTop);
     }
     drawHandles(d.points.map((pt) => { const x = rc.xOf(pt.time); return x == null ? null : { x, y: g.yBot }; }));
+  } else if (d.tool === 'anchored_vwap') {
+    const g = avwapGeometry(d, rc.candles, rc.xOf, rc.yOf, width);
+    if (!g) return ctx.restore();
+    const { xs } = g;
+    // a line through the bars on screen (NaN breaks it)
+    const poly = (ys: number[], color: string, lw: number, dash: number[]) => {
+      ctx.save();
+      ctx.setLineDash(dash);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = lw;
+      ctx.beginPath();
+      let pen = false;
+      for (let k = 0; k < xs.length; k++) {
+        if (!Number.isFinite(ys[k]) || !Number.isFinite(xs[k])) { pen = false; continue; }
+        if (pen) ctx.lineTo(xs[k], ys[k]); else { ctx.moveTo(xs[k], ys[k]); pen = true; }
+      }
+      ctx.stroke();
+      ctx.restore();
+    };
+    // a band's background: along its upper line, back along its lower one
+    const fill = (up: number[], lo: number[], color: string) => {
+      ctx.save();
+      ctx.fillStyle = color;
+      let k = 0;
+      while (k < xs.length) {
+        while (k < xs.length && !(Number.isFinite(up[k]) && Number.isFinite(lo[k]))) k++;
+        const a = k;
+        while (k < xs.length && Number.isFinite(up[k]) && Number.isFinite(lo[k])) k++;
+        if (k - a < 2) continue;
+        ctx.beginPath();
+        ctx.moveTo(xs[a], up[a]);
+        for (let j = a + 1; j < k; j++) ctx.lineTo(xs[j], up[j]);
+        for (let j = k - 1; j >= a; j--) ctx.lineTo(xs[j], lo[j]);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
+    };
+    for (const b of g.bands) if (b.b.fill) fill(b.up, b.lo, b.b.fillColor);
+    for (const b of g.bands) { poly(b.up, b.b.upColor, 1, []); poly(b.lo, b.b.loColor, 1, []); }
+    poly(g.mid, d.color, d.lineWidth || 1, baseDash);
+    drawHandles([g.anchor]);
   } else if (isFib(d.tool)) {
     const a = toXY(d.points[0]), b = toXY(d.points[1]);
     if (!a || !b) return ctx.restore();
@@ -1176,7 +1615,7 @@ function renderDrawing(ctx: CanvasRenderingContext2D, d: Drawing, rc: RenderCtx,
       const alpha = Math.max(0, Math.min(1, 1 - f.bgTransparency / 100));
       for (let i = 1; i < levels.length; i++) {
         const y1 = ya + (yb - ya) * levels[i - 1].value, y2 = ya + (yb - ya) * levels[i].value;
-        ctx.fillStyle = hexToRgba(colorOf(levels[i].color), alpha);
+        ctx.fillStyle = withAlpha(colorOf(levels[i].color), alpha);
         ctx.fillRect(xl, Math.min(y1, y2), xr - xl, Math.abs(y2 - y1));
       }
     }
@@ -1260,14 +1699,14 @@ function renderDrawing(ctx: CanvasRenderingContext2D, d: Drawing, rc: RenderCtx,
     ctx.globalAlpha = 0.18;
     ctx.fillRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
     ctx.globalAlpha = 1;
-    ctx.strokeStyle = '#b388ff';
+    // the line and the label in the ruler's colour (its width and style on the line)
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
     const midX = (a.x + b.x) / 2, midY = (a.y + b.y) / 2;
     const label = `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%   ${fmt(p2 - p1)}   ${bars} barres`;
     const tw = ctx.measureText(label).width;
     ctx.fillStyle = '#1c2028';
     ctx.fillRect(midX - tw / 2 - 4, midY - 16, tw + 8, 18);
-    ctx.fillStyle = '#b388ff';
+    ctx.fillStyle = d.color;
     ctx.fillText(label, midX - tw / 2, midY - 3);
     drawHandles([a, b]);
   }

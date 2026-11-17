@@ -5,7 +5,7 @@ import { binanceId, ibId, yahooId } from './feeds/resolve';
 // back each source goes. Shared by the page (to offer the choices) and the dev server
 // (scripts/history-download.ts, which downloads).
 
-export type DlSource = 'binance' | 'ibkr' | 'yahoo';
+export type DlSource = 'binance' | 'ibkr' | 'yahoo' | 'archive';
 export type DlPlan = {
   source: DlSource;
   // the source's own name for the market (Binance pair, IBKR contract id, Yahoo symbol)
@@ -17,6 +17,20 @@ export type DlPlan = {
   // Yahoo symbol of a cash index whose closes the bars are moved onto, session by session
   // (a CFD standing in for an index IBKR won't give)
   align?: string;
+  // archives: the Yahoo symbol whose daily bars carry the series on after the archive
+  yahoo?: string;
+};
+
+// Daily closes from public archives, older than what Yahoo keeps (TradingView has them too,
+// but its data may not be taken). The archive gives the closes before Yahoo's first day,
+// Yahoo its own daily bars after: one file holding the whole history.
+export const ARCHIVES: Record<string, { id: string; label: string; since: number; note: string }> = {
+  DJI: { id: 'mw:DJA', label: 'Archives · MeasuringWorth', since: 1896, note: 'Clôtures du Dow Jones depuis sa création (26 mai 1896). Avant le 12 décembre 1914, valeurs recalculées par MeasuringWorth pour se raccorder à l’indice actuel (31,6 au lieu de 40,9 publiés le 26 mai 1896).' },
+  NIKKEI: { id: 'fred:NIKKEI225', label: 'Archives · FRED (Réserve fédérale de Saint-Louis)', since: 1949, note: 'Clôtures du Nikkei 225 depuis le 16 mai 1949.' },
+  STOXX50: { id: 'stoxx:SX5E', label: 'Archives · STOXX', since: 1986, note: 'Clôtures de l’Euro Stoxx 50 depuis le 31 décembre 1986 (fichier historique de STOXX, arrêté en 2016).' },
+  STOXX600: { id: 'stoxx:SXXP', label: 'Archives · STOXX', since: 1986, note: 'Clôtures du Stoxx Europe 600 depuis le 31 décembre 1986 (fichier historique de STOXX, arrêté en 2016).' },
+  VXD: { id: 'fred:VXDCLS', label: 'Archives · FRED (Réserve fédérale de Saint-Louis)', since: 1997, note: 'Clôtures du VXD depuis le 7 octobre 1997.' },
+  RVX: { id: 'fred:RVXCLS', label: 'Archives · FRED (Réserve fédérale de Saint-Louis)', since: 2004, note: 'Clôtures du RVX depuis le 2 janvier 2004 (Yahoo ne le donne plus).' },
 };
 
 export const DL_TFS = ['1m', '5m', '15m', '30m', '1h', '4h', '1d'] as const;
@@ -63,6 +77,14 @@ export function downloadPlans(sym: Symbol): DlPlan[] {
     });
   }
   const y = yahooId(sym);
+  const arc = ARCHIVES[sym.ticker];
+  if (arc) {
+    out.unshift({
+      source: 'archive', id: arc.id, label: arc.label, yahoo: y ?? undefined,
+      maxDays: (tf) => (tf === '1d' ? Infinity : 0),
+      note: `${arc.note} Seule la clôture est connue : la bougie va de la clôture de la veille à celle du jour. ${y ? 'Ensuite, les bougies de Yahoo. ' : ''}En jour seulement, tout l’historique.`,
+    });
+  }
   if (y) out.push({ source: 'yahoo', id: y, label: `Yahoo · ${y}`, maxDays: (tf) => YAHOO_DAYS[tf] ?? 59, note: 'Rapide mais court : 30 jours en 1 min, 60 jours de 5 à 30 min, 2 ans en 1 h et 4 h.' });
   return out;
 }

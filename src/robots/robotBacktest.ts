@@ -9,6 +9,7 @@ import { familyOf } from '../data/indexFamilies';
 import { EM_COST, emBacktest, vixReader, type EmBtTrade } from './emBacktest';
 import { dowBars, dowRobotTrades } from './dowBacktest';
 import type { DowTrade } from './dow';
+import { nbBacktest, nbCostOf, nbRuleOf, nbSessionOf, type NbLeg } from './noiseBand';
 
 // The strategy tester's view of a lab robot: the lab's engine (3 entries per signal,
 // costs per side, the forex rollover left out of HistData's bid prices), on the lab's
@@ -158,6 +159,62 @@ export function runEmRobot(cfg: IndicatorConfig, rows: number[][], vixRows: numb
     precision: pricePrecision(ctx.symbol, n ? b.c[n - 1] : 1),
     candles: b.candles, trades, openTrade: null, equity, position, initialCapital: CAPITAL,
     warnings: fam ? [] : [`${ctx.symbol.ticker} : pas un indice suivi par le robot Expected Move`], ranAt: Date.now(),
+  };
+}
+
+// The noise-band robot (src/robots/noiseBand.ts): two entries per signal, 0.3 % of the capital
+// each, the same stop; A out at its target, B at the session's end
+const NB_EXIT: Record<NbLeg['reason'], [string, Trade['exitReason']]> = {
+  stop: ['Stop', 'stop'], objectif: ['Objectif A', 'target'], 'clôture': ['Fin de séance', 'signal'], 'en cours': ['En cours', 'end'],
+};
+export function runNbRobot(cfg: IndicatorConfig, rows: number[][], ctx: RobotRunContext): BacktestResult {
+  const b = toBars(rows);
+  const n = b.n;
+  const cost = nbCostOf(cfg.inputs, ctx.symbol.ticker);
+  const list = ctx.timeframe === '15m' ? nbBacktest(b, nbSessionOf(cfg.inputs?.session, ctx.symbol.ticker, ctx.symbol.category), cost, cfg.robot ? undefined : 0, nbRuleOf(cfg.inputs)) : [];
+  const booked = new Float64Array(n);
+  const moves = new Float64Array(n + 1);
+  const trades: Trade[] = [];
+  let eq = CAPITAL;
+  for (const t of list) {
+    // the 2 entries of a signal risk the same amount, set when it fires
+    const risk = eq * RISK, qty = risk / t.risk;
+    t.legs.forEach((l, k) => {
+      const pnl = t.net[k] * risk;
+      let best = 0, worst = 0;
+      for (let j = t.entryBar; j <= l.exitBar; j++) {
+        best = Math.max(best, t.side > 0 ? b.h[j] - t.entry : t.entry - b.l[j]);
+        worst = Math.min(worst, t.side > 0 ? b.l[j] - t.entry : t.entry - b.h[j]);
+      }
+      const [exitLabel, exitReason] = NB_EXIT[l.reason];
+      trades.push({
+        id: trades.length + 1, side: t.side > 0 ? 'long' : 'short', qty,
+        entryBar: t.entryBar, entryTime: b.t[t.entryBar], entryPrice: t.entry, entryLabel: `${t.side > 0 ? 'Achat' : 'Vente'} ${k ? 'B fin de séance' : 'A objectif'}`,
+        exitBar: l.exitBar, exitTime: b.t[l.exitBar], exitPrice: l.exit, exitLabel, exitReason,
+        pnl, pricePct: ((l.exit - t.entry) / t.entry) * t.side * 100, unitGain: (l.exit - t.entry) * t.side,
+        bars: l.exitBar - t.entryBar, mfe: best * qty, mae: worst * qty, commission: 2 * cost * t.entry * qty,
+      });
+      booked[l.exitBar] += pnl;
+      moves[t.entryBar] += t.side * qty;
+      moves[l.exitBar] -= t.side * qty;
+      eq += pnl;
+    });
+  }
+  const equity: number[] = new Array(n);
+  const position: number[] = new Array(n);
+  for (let i = 0, e = CAPITAL, p = 0; i < n; i++) {
+    e += booked[i];
+    p += moves[i];
+    equity[i] = e;
+    position[i] = Math.abs(p) < 1e-12 ? 0 : p;
+  }
+  return {
+    strategyId: `robot:${cfg.id}`,
+    strategyName: cfg.robot?.name ?? 'Robot Bande de bruit',
+    ticker: ctx.symbol.ticker, timeframe: ctx.timeframe, source: ctx.source, currency: '€',
+    precision: pricePrecision(ctx.symbol, n ? b.c[n - 1] : 1),
+    candles: b.candles, trades, openTrade: null, equity, position, initialCapital: CAPITAL,
+    warnings: ctx.timeframe === '15m' ? [] : ['Le robot Bande de bruit se teste sur un graphique en 15 minutes'], ranAt: Date.now(),
   };
 }
 

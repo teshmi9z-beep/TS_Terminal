@@ -224,6 +224,17 @@
 .cal-soon { color: var(--down); font-weight: 500; }
 .cal-table tr.past td { color: var(--text-muted); }
 .cal-table tr.past .cal-title, .cal-table tr.past .cal-country { color: var(--text); }
+/* the economic list: one heading row per day */
+.cal-view { margin-right: 4px; }
+.cal-view button { padding: 6px 12px; }
+.cal-table tr.cal-day-row td { padding: 16px 10px 9px; background: var(--bg-panel); border-left: 3px solid var(--text-bright); color: var(--text-bright); font-size: 14px; font-weight: 600; }
+.cal-table tbody tr.cal-day-row:hover td { background: var(--bg-panel); }
+.cal-table tr.cal-day-row.today td { border-left-color: var(--accent-text); }
+.cal-day-name { display: inline-block; }
+.cal-day-name::first-letter { text-transform: uppercase; }
+.cal-today-tag { color: var(--accent-text); margin-right: 10px; }
+.cal-table tr.cal-none td { padding: 8px 10px; color: var(--text-muted); font-size: 12px; }
+.cal-table tbody tr.cal-none:hover td { background: none; }
 .cal-countries { width: 300px; }
 .cal-presets { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 12px 8px; border-bottom: 1px solid var(--border); }
 .cal-presets button { background: var(--bg-hover); border: none; border-radius: 12px; padding: 4px 10px; font-size: 12px; color: var(--text); cursor: pointer; }
@@ -572,3 +583,23 @@
 .mini-big + .mini-detach { margin-left: 6px; }
 .return-layout-bar { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 4px 8px; background: var(--bg-panel, var(--bg-menu)); flex-shrink: 0; }
 .return-layout-bar .pill-btn { font-size: 12px; }
+
+/* Robots tab menu: kept robots, then the studies; a line under each */
+.rb-sets-title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); margin: 6px 2px 0; }
+.rb-sets-title:first-child { margin-top: 0; }
+.rb-sets button { display: flex; flex-direction: column; gap: 1px; }
+.rb-sets button small { font-size: 11px; font-weight: 400; color: var(--text-faint); }
+
+/* the flux grid robot (FluxGridCard) */
+.fg-head { display: grid; grid-template-columns: minmax(260px, 520px) 1fr; gap: 16px; align-items: start; }
+.fg-sketch { width: 100%; height: auto; color: var(--text); }
+.fg-t { font-size: 11px; fill: var(--text-muted); }
+.fg-r { fill: #f23645; }
+.fg-g { fill: #089981; }
+.fg-rules { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.5; display: grid; gap: 4px; }
+.fg-open { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; }
+.fg-legend { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; font-size: 12px; margin-top: 4px; }
+.fg-legend i { display: inline-block; width: 12px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+.fg-legend small { color: var(--text-faint); }
+.rb-kpis.fg-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 8px 0; }
+@media (max-width: 900px) { .fg-head { grid-template-columns: 1fr; } }

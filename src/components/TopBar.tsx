@@ -18,6 +18,7 @@ import SymbolQuickMenu from './SymbolQuickMenu';
 import { LANG, setLang } from '../i18n/lang';
 import { brokerLabel, disconnectBroker, isLive, useBroker } from '../store/broker';
 import { BrokerLogo } from './BrokerDialog';
+import { redoDrawing, undoDrawing, useDrawingHistory } from '../store/drawingHistory';
 
 const STYLES: { id: ChartSettings['candleStyle']; label: string; icon: ReactElement }[] = [
   { id: 'candles', label: 'Bougies', icon: <CandlesIcon /> },
@@ -48,6 +49,7 @@ export default function TopBar() {
   const openDialog = useChartUi((s) => s.openDialog);
   const replayMode = useChartUi((s) => s.replay.mode);
   const setReplay = useChartUi((s) => s.setReplay);
+  const history = useDrawingHistory();
   const [tfMenuAt, setTfMenuAt] = useState<{ left: number; top: number } | null>(null);
   const [styleMenuAt, setStyleMenuAt] = useState<{ left: number; top: number } | null>(null);
   // dropdowns open under their button, kept inside the window
@@ -180,6 +182,14 @@ export default function TopBar() {
         <ReplayIcon /><span>Replay</span>
       </button>
       <div className="tb-sep" />
+      {/* like TradingView: undo / redo the drawings (same history as Ctrl+Z / Ctrl+Y) */}
+      <button className="tb-btn" disabled={!history.canUndo} title="Annuler le dernier changement des dessins (Ctrl+Z)" onClick={() => undoDrawing()}>
+        <UndoIcon />
+      </button>
+      <button className="tb-btn" disabled={!history.canRedo} title="Rétablir le changement annulé (Ctrl+Y)" onClick={() => redoDrawing()}>
+        <RedoIcon />
+      </button>
+      <div className="tb-sep" />
       <div className="top-bar-right">
         {topBarOrder.map((id, i) => POPOUT_ID && (id === 'windows' || id === 'detach' || id === 'workspaces') ? null : (
           <div
@@ -280,4 +290,6 @@ function ShieldIcon() { return <svg {...ic}><path d="M9 2.5l5.5 2v4.2c0 3.3-2.3 
 function FolderIcon() { return <svg {...ic}><path d="M2.5 5V14h13V6.5H9L7.5 5z" /></svg>; }
 function LogoutIcon() { return <svg {...ic}><path d="M7 3H3.5v12H7M11 5.5L14.5 9 11 12.5M14.5 9H7" /></svg>; }
 function ReplayIcon() { return <svg {...ic}><path d="M9.5 4.5L4 9l5.5 4.5zM15.5 4.5L10 9l5.5 4.5z" /></svg>; }
+function UndoIcon() { return <svg {...ic}><path d="M6.5 4L3 7.5 6.5 11" /><path d="M3 7.5h7.5a4 4 0 010 8H7" /></svg>; }
+function RedoIcon() { return <svg {...ic}><path d="M11.5 4L15 7.5 11.5 11" /><path d="M15 7.5H7.5a4 4 0 000 8H11" /></svg>; }
 function SearchIcon() { return <svg {...ic} width={14} height={14}><circle cx="8" cy="8" r="5" /><path d="M12 12l3.5 3.5" /></svg>; }

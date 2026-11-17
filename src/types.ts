@@ -34,6 +34,8 @@ export type DrawTool =
   // volume profiles: over two clicked bars ("Gamme fixe"), from a bar to the last one ("Profil ancré")
   | 'fixed_range'
   | 'anchored_vp'
+  // TradingView's "VWAP ancré": the volume-weighted average price from a clicked bar on
+  | 'anchored_vwap'
   | 'long_position'
   | 'short_position'
   // position from three clicks: entry, stop, target (long or short from where the stop is)
@@ -70,9 +72,28 @@ export type Drawing = {
   hline?: Partial<HLineSettings>;
   // volume profiles (see volumeProfile.ts)
   vp?: Partial<VpSettings>;
+  // anchored VWAP: its bands and source (the VWAP line is `color`, `lineWidth`, `lineStyle`)
+  avwap?: Partial<AvwapSettings>;
   // the timeframe it was drawn on, and on which timeframes it shows (all when absent)
   tf?: Timeframe;
   showOn?: DrawingShowOn;
+  // locked: selectable, but neither moved nor resized (TradingView's padlock)
+  locked?: boolean;
+  // rectangles, like TradingView's: their background (#rrggbbaa; absent: the line colour at
+  // 15 %), none at all, the sides running to the chart's edge, and a text inside
+  // (`text`, `fontSize`) with its own colour, weight and place
+} & BoxStyle;
+
+export type BoxStyle = {
+  fillColor?: string;
+  noFill?: boolean;
+  extendLeft?: boolean;
+  extendRight?: boolean;
+  textColor?: string;
+  bold?: boolean;
+  italic?: boolean;
+  textV?: 'top' | 'middle' | 'bottom';
+  textH?: 'left' | 'center' | 'right';
 };
 
 export type DrawingShowOn = 'all' | 'this' | 'lower' | 'higher';
@@ -98,6 +119,15 @@ export type VpSettings = {
   showVaLines: boolean;
   background: boolean;
   bgColor: string;
+};
+
+// an anchored VWAP's settings, like TradingView's: bands at N standard deviations (or N % of
+// the VWAP), each with its upper and lower line and the background between them
+export type AvwapBand = { on: boolean; mult: number; upColor: string; loColor: string; fill: boolean; fillColor: string };
+export type AvwapSettings = {
+  mode: 'stdev' | 'percent';
+  source: 'open' | 'high' | 'low' | 'close' | 'hl2' | 'hlc3' | 'ohlc4' | 'hlcc4';
+  bands: AvwapBand[];
 };
 
 // a horizontal line's settings, like ProRealTime's "Ligne horizontale" window
@@ -131,11 +161,15 @@ export type DrawingPreset = {
   color: string;
   lineWidth: number;
   lineStyle?: LineStyleName;
+  // a Fibo's levels, colours, labels... (templates saved before 2026-11-16 have none)
+  fib?: FibSettings;
   fibLevels?: number[];
   riskReward?: number;
   hline?: Partial<HLineSettings>;
   vp?: Partial<VpSettings>;
-};
+  avwap?: Partial<AvwapSettings>;
+  fontSize?: number;
+} & BoxStyle;
 
 export type FibLevel = { value: number; color: string; on: boolean };
 export type FibSettings = {
@@ -160,7 +194,7 @@ export const FIB_RETR_ALL = [0, 0.236, 0.382, 0.5, 0.618, 0.65, 0.786, 1];
 export const FIB_EXT_ALL = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1, 1.272, 1.414, 1.618, 2, 2.618];
 
 export type OverlayIndicatorType = 'SMA' | 'EMA' | 'ZLEMA' | 'WMA' | 'BOLLINGER' | 'VWAP' | 'DONCHIAN' | 'STOCH_ENV'
-  | 'FVG_CUSTOM' | 'IMBALANCE' | 'HA_CANDLES' | 'SESSIONS' | 'TSH_ARROW' | 'ROBOT' | 'HOUR_RANGE' | 'DOW_STRUCTURE' | 'INDEX_REGIME' | 'PIVOT_POINTS' | 'BASIS' | 'GAP_OPEN' | 'EXPECTED_MOVE' | 'FLUX';
+  | 'FVG_CUSTOM' | 'IMBALANCE' | 'HA_CANDLES' | 'SESSIONS' | 'TSH_ARROW' | 'ROBOT' | 'HOUR_RANGE' | 'DOW_STRUCTURE' | 'INDEX_REGIME' | 'PIVOT_POINTS' | 'BASIS' | 'GAP_OPEN' | 'EXPECTED_MOVE' | 'FLUX' | 'FLUX_GRID' | 'NOISE_BAND';
 export type PaneIndicatorType = 'RSI' | 'STOCH' | 'VOLUME' | 'MACD' | 'ATR' | 'CCI' | 'MOMENTUM' | 'OBV' | 'WILLR' | 'ADX' | 'STO_RSI';
 // PINE: a user script pasted in the Pine editor (cfg.scriptId)
 // STRATEGY: a strategy of the tester shown on the chart (cfg.strategyId): its indicators and trades
@@ -248,7 +282,15 @@ export type PriceAlert = {
 export type AlertOperand =
   | { kind: 'price' }
   | { kind: 'plot'; id: string; plot: string }
-  | { kind: 'value'; value: number };
+  | { kind: 'value'; value: number }
+  // a line of an anchored VWAP drawing (`line`: the VWAP, or band `band`'s upper / lower line),
+  // with the drawing's settings copied; while the drawing exists the alert follows it (its
+  // anchor moved, its bands changed)
+  | AvwapOperand;
+export type AvwapOperand = {
+  kind: 'avwap'; drawing: string; anchor: number; source: AvwapSettings['source']; mode: AvwapSettings['mode'];
+  line: 'vwap' | 'up' | 'lo'; band: number; mult: number;
+};
 // cross*: from the previous bar to this one; above / below: on this bar; enter / exit / inside /
 // outside: the channel between `right` and `right2`; up_pct / down_pct: `left` moved at least
 // `right` % over the last `bars` bars

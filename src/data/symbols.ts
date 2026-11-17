@@ -338,7 +338,7 @@ export const SYMBOLS: Symbol[] = [
   { ticker: 'ENGI.PA', name: 'Engie', basePrice: 15, category: 'Actions' },
   { ticker: 'ORA.PA', name: 'Orange', basePrice: 11, category: 'Actions' },
   { ticker: 'VIE.PA', name: 'Veolia', basePrice: 30, category: 'Actions' },
-  { ticker: 'STLA.PA', name: 'Stellantis', basePrice: 13, category: 'Actions' },
+  { ticker: 'STLA.PA', name: 'Stellantis', basePrice: 13, category: 'Actions', yahoo: 'STLAP.PA' },
   { ticker: 'SGO.PA', name: 'Saint-Gobain', basePrice: 90, category: 'Actions' },
   { ticker: 'ML.PA', name: 'Michelin', basePrice: 33, category: 'Actions' },
   { ticker: 'CS.PA', name: 'Axa', basePrice: 36, category: 'Actions' },
@@ -359,7 +359,7 @@ export const SYMBOLS: Symbol[] = [
   { ticker: 'EDEN.PA', name: 'Edenred', basePrice: 32, category: 'Actions' },
   { ticker: 'ERF.PA', name: 'Eurofins Scientific', basePrice: 48, category: 'Actions' },
   { ticker: 'MT.PA', name: 'ArcelorMittal', basePrice: 24, category: 'Actions' },
-  { ticker: 'STM.PA', name: 'STMicroelectronics', basePrice: 22, category: 'Actions' },
+  { ticker: 'STM.PA', name: 'STMicroelectronics', basePrice: 22, category: 'Actions', yahoo: 'STMPA.PA' },
   { ticker: 'AMUN.PA', name: 'Amundi', basePrice: 68, category: 'Actions' },
   { ticker: 'VIV.PA', name: 'Vivendi', basePrice: 2.7, category: 'Actions' },
 

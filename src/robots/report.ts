@@ -11,8 +11,8 @@ export type RobotStrategy = {
   // 'em': the Expected Move robots (scripts/robots/em-publish.ts, public/robots/em.json), not
   // proven, run by their own rule (src/robots/emRule.ts) rather than the lab's 3 entries
   // 'dow': the Dow structure robots of that study (scripts/robots/dow-robots.ts, public/robots/dow-robots.json)
-  set?: 'spe' | 'hr' | 'em' | 'dow';
-  kind?: 'em' | 'dow';
+  set?: 'spe' | 'hr' | 'em' | 'dow' | 'nb';
+  kind?: 'em' | 'dow' | 'nb';
   // the Dow robot's indicator settings (its chart, the tester and the automatic mode read them)
   inputs?: Record<string, number | string | boolean>;
   // what stands for the robustness line when it isn't the lab's neighbouring settings

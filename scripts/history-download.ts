@@ -14,7 +14,8 @@ import { ibLink } from './ib-relay.ts'
 // The page picks the source (src/data/downloadPlan.ts) and sends it, with how far back it goes.
 // Sources: Binance for crypto, page by page from the oldest bar;
 // Interactive Brokers through IB Gateway (read-only historical requests, never an order),
-// page by page back from now; Yahoo for the rest, as far as it goes. Binance and IBKR only
+// page by page back from now; Yahoo for the rest, as far as it goes; public archives for the
+// daily closes older than Yahoo's (MeasuringWorth, FRED, STOXX), carried on by Yahoo's days. Binance and IBKR only
 // bring what the file lacks: the bars after its last one and before its first. A download is merged
 // into dl_<source>_<ticker>_<tf>.bin (bars already there are kept), saved as it goes, and
 // optionally rebuilds the coarser timeframes (15 min to 4 h) from the whole file.
@@ -32,7 +33,7 @@ type Job = {
   have?: { from: number; to: number }
 }
 type Row = [number, number, number, number, number, number]
-type DlPlan = { source: 'binance' | 'ibkr' | 'yahoo'; id: string; label: string; align?: string }
+type DlPlan = { source: 'binance' | 'ibkr' | 'yahoo' | 'archive'; id: string; label: string; align?: string; yahoo?: string }
 type Start = { ticker?: string; market?: string; tf?: string; days?: number; coarser?: boolean; plan?: Partial<DlPlan> }
 
 const DL_TFS = ['1m', '5m', '15m', '30m', '1h', '4h', '1d']
@@ -199,6 +200,102 @@ const rowsOf = (d: Float64Array): Row[] => {
   return out
 }
 
+// ---------------------------------------------------------------- archives (days only)
+
+// Daily closes older than Yahoo's, from public archives (TradingView has them as well, but its
+// data may not be taken). Only the close is known: a day's bar runs from the day before's close
+// to its own, without wicks. The archive gives the days before Yahoo's first one, Yahoo its own
+// bars after it, in one file. The id names the archive: mw:<MeasuringWorth dataset>,
+// fred:<FRED series>, stoxx:<STOXX index code>.
+type Close = [number, number]
+const dayOf = (y: number, m: number, d: number) => Date.UTC(y, m - 1, d) / 1000
+const weekday = (t: number) => { const d = new Date(t * 1000).getUTCDay(); return d > 0 && d < 6 }
+
+async function getText(url: string): Promise<string> {
+  const r = await fetch(url, { headers: { 'user-agent': 'Mozilla/5.0' } })
+  if (!r.ok) throw new Error(`${new URL(url).hostname} ${r.status}`)
+  return r.text()
+}
+
+// MeasuringWorth: the Dow Jones since its creation on 26 May 1896 (its earlier "Dow Jones
+// Average" is another index), one CSV for the whole span
+async function measuringWorth(code: string): Promise<Close[]> {
+  const end = new Date()
+  const q = `monthStartD=05&dayStartD=26&yearStartD=1896&monthEndD=${end.getUTCMonth() + 1}&dayEndD=${end.getUTCDate()}&yearEndD=${end.getUTCFullYear()}`
+  const text = await getText(`https://www.measuringworth.com/datasets/${encodeURIComponent(code)}/export.php?${q}`)
+  const out: Close[] = []
+  for (const m of text.matchAll(/^"(\d{1,2})\/(\d{1,2})\/(\d{4})","([\d.]+)"/gm)) out.push([dayOf(+m[3], +m[1], +m[2]), +m[4]])
+  return out
+}
+
+// FRED (Federal Reserve Bank of St. Louis): a series' whole history as CSV, "." on days without a value
+async function fred(code: string): Promise<Close[]> {
+  const text = await getText(`https://fred.stlouisfed.org/graph/fredgraph.csv?id=${encodeURIComponent(code)}`)
+  const out: Close[] = []
+  for (const m of text.matchAll(/^(\d{4})-(\d{2})-(\d{2}),([\d.]+)\s*$/gm)) out.push([dayOf(+m[1], +m[2], +m[3]), +m[4]])
+  return out
+}
+
+// STOXX's historical file of its main indices (31 Dec 1986 to Oct 2016), a column per index;
+// it also writes holidays, with the close of the day before: those are left out
+async function stoxx(code: string): Promise<Close[]> {
+  const text = await getText('https://www.stoxx.com/document/Indices/Current/HistoricalData/hbrbcpe.txt')
+  const lines = text.split(/\r?\n/)
+  const head = lines.find((l) => l.split(';').some((c) => c.trim() === code))
+  if (!head) throw new Error(`STOXX : indice ${code} absent du fichier`)
+  const col = head.split(';').findIndex((c) => c.trim() === code)
+  const out: Close[] = []
+  for (const l of lines) {
+    const m = l.match(/^(\d{2})\.(\d{2})\.(\d{4})\s*;/)
+    if (!m) continue
+    const v = Number(l.split(';')[col]?.trim())
+    const t = dayOf(+m[3], +m[2], +m[1])
+    if (!(v > 0) || !weekday(t) || out[out.length - 1]?.[1] === v) continue
+    out.push([t, v])
+  }
+  return out
+}
+
+async function archive(job: Job, plan: DlPlan, add: (rows: Row[]) => void) {
+  const [kind, code] = plan.id.split(':')
+  const closes = (kind === 'mw' ? await measuringWorth(code) : kind === 'fred' ? await fred(code) : kind === 'stoxx' ? await stoxx(code) : null)
+  if (!closes) throw new Error(`archive inconnue : ${plan.id}`)
+  closes.sort((a, b) => a[0] - b[0])
+  if (!closes.length) throw new Error('archive vide')
+  job.from = closes[0][0]
+  job.progress = 0.4
+  // Yahoo's own days, from its first one
+  let days: Row[] = []
+  if (plan.yahoo) {
+    try {
+      const meta = JSON.parse(await getText(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(plan.yahoo)}?interval=1d&range=5d`)) as { chart: { result?: { meta?: { firstTradeDate?: number } }[] } }
+      const first = meta.chart.result?.[0]?.meta?.firstTradeDate
+      const sub: Job = { ...job, from: first != null ? first - 7 * 86400 : closes[0][0] }
+      await yahoo(sub, { ...plan, source: 'yahoo', id: plan.yahoo }, (rows) => { days = rows })
+    } catch (e) {
+      job.message = `Yahoo ne répond pas pour ${plan.yahoo} (${e instanceof Error ? e.message : e}) : archives seules`
+    }
+  }
+  const start = days.length ? days[0][0] : Infinity
+  const rows: Row[] = []
+  let prev = 0
+  for (const [t, c] of closes) {
+    if (t >= start) break
+    const o = prev || c
+    rows.push([t, o, Math.max(o, c), Math.min(o, c), c, 0])
+    prev = c
+  }
+  // the seam: how far the archive's closes are from Yahoo's on the days both have
+  const yahooClose = new Map(days.map((d) => [d[0], d[4]]))
+  const gaps = closes.filter(([t]) => yahooClose.has(t)).map(([t, c]) => Math.abs(c / yahooClose.get(t)! - 1)).sort((a, b) => a - b)
+  if (gaps.length) {
+    const median = gaps[Math.floor(gaps.length / 2)] * 100
+    job.message = `raccord avec Yahoo : écart médian ${median.toFixed(2).replace('.', ',')} % sur ${gaps.length} jours communs`
+  }
+  add([...rows, ...days])
+  job.progress = 1
+}
+
 // ---------------------------------------------------------------- alignment on a cash index
 
 // New York's offset from UTC on a day (hours): 4 in summer time, 5 in winter
@@ -347,6 +444,7 @@ async function run(job: Job, plan: DlPlan, coarser: boolean) {
     if (plan.align) job.closes = await cashCloses(plan.align, Date.UTC(1990, 0, 1) / 1000)
     if (plan.source === 'binance') await binance(job, plan, add)
     else if (plan.source === 'ibkr') await ibkr(job, plan, add)
+    else if (plan.source === 'archive') await archive(job, plan, add)
     else await yahoo(job, plan, add)
     const rows = toRows(sortUnique(got))
     // (an aligned file is measured again even when nothing new came)
@@ -373,9 +471,11 @@ function start(body: Start): Job {
   if (!DL_TFS.includes(tf)) throw new Error('unité inconnue')
   const market = MARKETS.includes(body.market ?? '') ? body.market! : 'Stock'
   const p = body.plan ?? {}
-  if (!p.source || !['binance', 'ibkr', 'yahoo'].includes(p.source) || !p.id || !/^[A-Za-z0-9.^=:_-]{1,40}$/.test(p.id)) throw new Error(`aucune source de téléchargement pour ${ticker}`)
+  if (!p.source || !['binance', 'ibkr', 'yahoo', 'archive'].includes(p.source) || !p.id || !/^[A-Za-z0-9.^=:_-]{1,40}$/.test(p.id)) throw new Error(`aucune source de téléchargement pour ${ticker}`)
+  if (p.source === 'archive' && tf !== '1d') throw new Error('les archives n’existent qu’en jour')
   const align = p.align && /^\^?[A-Za-z0-9.=-]{1,20}$/.test(p.align) ? p.align : undefined
-  const plan: DlPlan = { source: p.source, id: p.id, label: String(p.label ?? p.id).slice(0, 80), align }
+  const yahooId = p.yahoo && /^\^?[A-Za-z0-9.=-]{1,20}$/.test(p.yahoo) ? p.yahoo : undefined
+  const plan: DlPlan = { source: p.source, id: p.id, label: String(p.label ?? p.id).slice(0, 80), align, yahoo: yahooId }
   const days = Math.min(Number(body.days) || 365, 60 * 365)
   const job: Job = {
     id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, ticker, market, tf, source: plan.source, label: plan.label,

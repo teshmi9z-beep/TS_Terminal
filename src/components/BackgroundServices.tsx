@@ -171,7 +171,9 @@ function RobotRunner() {
 function AlertRunner() {
   const alerts = useStore((s) => s.techAlerts);
   const watchlists = useStore((s) => s.watchlists);
-  useEffect(() => { syncAlerts(alerts, watchlists); }, [alerts, watchlists]);
+  // (an anchored VWAP moved further back: its alerts load more history)
+  const avwapAnchors = useStore((s) => s.drawings.filter((d) => d.tool === 'anchored_vwap').map((d) => `${d.id}:${d.points[0]?.time}`).join());
+  useEffect(() => { syncAlerts(alerts, watchlists); }, [alerts, watchlists, avwapAnchors]);
   useEffect(() => () => syncAlerts([], []), []);
   return null;
 }

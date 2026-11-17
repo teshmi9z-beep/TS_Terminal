@@ -7,6 +7,7 @@ import { ibRelay } from './scripts/ib-relay.ts'
 import { brokerRelay } from './scripts/broker-relay.ts'
 import { historyDownload } from './scripts/history-download.ts'
 import { listBackup } from './scripts/list-backup.ts'
+import { ffCalendar } from './scripts/ff-calendar.ts'
 import { datasetFiles, idOfFile, mergeNewer, readDataset, readHeader, readPage, writeDataset, type DatasetMeta } from './scripts/robots/dataset.ts'
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36'
@@ -54,12 +55,11 @@ const relay = (target: string, prefix: string): ProxyOptions => ({
   configure: cleanRequest,
 })
 // TradingView news (list, and the text of a story), community scripts (search,
-// source of open scripts), and the ForexFactory economic calendar feed
+// source of open scripts); ForexFactory's economic calendar is served by scripts/ff-calendar.ts
 const tvNewsProxy = relay('https://news-mediator.tradingview.com', '/tvnews')
 const tvStoryProxy = relay('https://news-headlines.tradingview.com', '/tvstory')
 const tvWebProxy = relay('https://www.tradingview.com', '/tvweb')
 const tvPineProxy = relay('https://pine-facade.tradingview.com', '/tvpine')
-const ffProxy = relay('https://nfs.faireconomy.media', '/ffcal')
 // TradingView's economic calendar: the actual figures once published (ForexFactory's feed has none);
 // it answers only a request that says it comes from tradingview.com
 const tvCalProxy: ProxyOptions = {
@@ -308,7 +308,7 @@ function labData(): Plugin {
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), yahooInfo(), labData(), ibRelay(), brokerRelay(), historyDownload(), listBackup()],
-  server: { proxy: { '/yf': yahooProxy, '/figi': figiProxy, '/tvscan': tvScanProxy, '/tvnews': tvNewsProxy, '/tvstory': tvStoryProxy, '/tvweb': tvWebProxy, '/tvpine': tvPineProxy, '/ffcal': ffProxy, '/tvcal': tvCalProxy, '/nasdaq': nasdaqProxy, '/mexc': mexcProxy, '/bingx': bingxProxy } },
-  preview: { proxy: { '/yf': yahooProxy, '/figi': figiProxy, '/tvscan': tvScanProxy, '/tvnews': tvNewsProxy, '/tvstory': tvStoryProxy, '/tvweb': tvWebProxy, '/tvpine': tvPineProxy, '/ffcal': ffProxy, '/tvcal': tvCalProxy, '/nasdaq': nasdaqProxy, '/mexc': mexcProxy, '/bingx': bingxProxy } },
+  plugins: [react(), yahooInfo(), labData(), ibRelay(), brokerRelay(), historyDownload(), listBackup(), ffCalendar()],
+  server: { proxy: { '/yf': yahooProxy, '/figi': figiProxy, '/tvscan': tvScanProxy, '/tvnews': tvNewsProxy, '/tvstory': tvStoryProxy, '/tvweb': tvWebProxy, '/tvpine': tvPineProxy, '/tvcal': tvCalProxy, '/nasdaq': nasdaqProxy, '/mexc': mexcProxy, '/bingx': bingxProxy } },
+  preview: { proxy: { '/yf': yahooProxy, '/figi': figiProxy, '/tvscan': tvScanProxy, '/tvnews': tvNewsProxy, '/tvstory': tvStoryProxy, '/tvweb': tvWebProxy, '/tvpine': tvPineProxy, '/tvcal': tvCalProxy, '/nasdaq': nasdaqProxy, '/mexc': mexcProxy, '/bingx': bingxProxy } },
 })

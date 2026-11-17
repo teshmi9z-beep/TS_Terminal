@@ -55,6 +55,8 @@ const cacheFile = (key: string) => join(CACHE_DIR, `${key.replace('|1M', '|month
 function tailDur(secs: number, step: number): string {
   const s = Math.max(secs, 2 * step)
   if (step < 86400 && s <= 86400) return `${Math.ceil(s)} S`
+  // (more than a year: IBKR wants it in years)
+  if (s > 365 * 86400) return `${Math.ceil(s / (365 * 86400))} Y`
   if (step <= 86400) return `${Math.ceil(s / 86400) + 1} D`
   if (step <= 604800) return `${Math.ceil(s / 604800) + 1} W`
   return `${Math.ceil(s / 2678400) + 1} M`
@@ -268,11 +270,14 @@ class IbLink {
     const last = s.bars[s.bars.length - 1]
     if (last && from >= s.from && last.time >= from) {
       if (end !== undefined && end <= last.time) return slice()
-      // the last bar kept was still forming: asked again with the newer ones
-      const tail = await this.fetch(id, bar, tailDur(now - last.time + step, step))
+      // the last bar kept was still forming: asked again with the newer ones, up to `end` only when
+      // the page asked stops there (a share's older history behind Yahoo's: the kept bars may
+      // stop years ago, and IBKR refuses a top-up to now of more than a year in days)
+      const upTo = end !== undefined ? Math.min(end, now) : now
+      const tail = await this.fetch(id, bar, tailDur(upTo - last.time + step, step), end)
       // in place of the kept ones from its first bar, or after the last kept when it starts later
-      this.merge(key, s, tail, tail.length && tail[0].time <= last.time ? tail[0].time : last.time + 1, Infinity)
-      s.topped = Date.now()
+      this.merge(key, s, tail, tail.length && tail[0].time <= last.time ? tail[0].time : last.time + 1, end ?? Infinity)
+      if (end === undefined) s.topped = Date.now()
       return slice()
     }
     // a first page already asked (a background load, another chart): its bars, then the newer ones

@@ -3,6 +3,8 @@ import type { Plot } from '../indicators/types';
 import { getIndicatorDef, sourcePlots } from '../indicators/registry';
 import { sourceRef } from '../indicators/derived';
 import { DEC } from '../i18n/lang';
+import { avwapLabel, avwapValueAt } from '../components/anchoredVwap';
+import { tfSeconds } from '../data/timeframes';
 
 // The conditions of an alert on indicators, checked on one bar (TradingView's operators).
 
@@ -30,6 +32,7 @@ export function valueReader(candles: Candle[], plots: Map<string, Plot[]>): Valu
     if (!c) return NaN;
     if (op.kind === 'price') return c.close;
     if (op.kind === 'value') return op.value;
+    if (op.kind === 'avwap') return avwapValueAt(candles, op, i);
     const key = `${op.id}:${op.plot}`;
     let m = maps.get(key);
     if (!m) {
@@ -97,6 +100,7 @@ export function indicatorLabel(id: string, plotKey: string | null, indicators: I
 export function operandLabel(op: AlertOperand, indicators: IndicatorConfig[]): string {
   if (op.kind === 'price') return 'Prix';
   if (op.kind === 'value') return String(op.value).replace('.', DEC);
+  if (op.kind === 'avwap') return avwapLabel(op);
   return indicatorLabel(op.id, op.plot, indicators);
 }
 
@@ -112,8 +116,9 @@ export function conditionText(c: AlertCondition, indicators: IndicatorConfig[]):
 export const alertSummary = (a: Pick<TechAlert, 'conditions' | 'match' | 'indicators'>) =>
   a.conditions.map((c) => conditionText(c, a.indicators)).join(a.match === 'all' ? ' ET ' : ' OU ');
 
-// bars to load so the indicators settle: their longest setting, chained ones adding up
-export function barsNeeded(a: Pick<TechAlert, 'indicators' | 'conditions'>): number {
+// bars to load so the indicators settle: their longest setting, chained ones adding up; an
+// anchored VWAP, back to its anchor (50 000 bars at most)
+export function barsNeeded(a: Pick<TechAlert, 'indicators' | 'conditions' | 'tf'>): number {
   let sum = 0;
   for (const c of a.indicators) {
     let p = 0;
@@ -123,5 +128,8 @@ export function barsNeeded(a: Pick<TechAlert, 'indicators' | 'conditions'>): num
     sum += p;
   }
   const bars = Math.max(0, ...a.conditions.map((c) => c.bars ?? 0));
-  return Math.min(5000, Math.max(500, sum * 5 + bars + 100));
+  const step = tfSeconds(a.tf) ?? 60;
+  const anchors = a.conditions.flatMap((c) => [c.left, c.right, c.right2]).flatMap((o) => (o?.kind === 'avwap' && o.anchor > 0 ? [o.anchor] : []));
+  const sinceAnchor = anchors.length ? Math.min(50_000, Math.ceil((Date.now() / 1000 - Math.min(...anchors)) / step) + 50) : 0;
+  return Math.max(sinceAnchor, Math.min(5000, Math.max(500, sum * 5 + bars + 100)));
 }

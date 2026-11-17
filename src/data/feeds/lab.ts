@@ -12,7 +12,8 @@ import type { FeedSession, MarketMeta } from './types';
 type LabFile = { id: string; symbol: string; platform?: string; source: string; tf: string; bars: number; from: number; to: number; derived?: boolean };
 
 // a lab file serving a timeframe, its bars grouped by `ratio` when it is finer
-export type LabSource = { file: LabFile; step: number; ratio: number; anchor: number };
+// (months: days grouped by calendar month, `ratio` then the most days a month holds)
+export type LabSource = { file: LabFile; step: number; ratio: number; anchor: number; month?: boolean };
 
 const PAGE_BARS = 1500;
 const INDEX_TTL = 10 * 60_000;
@@ -37,10 +38,12 @@ function labFiles(): Promise<LabFile[]> {
 export async function labSources(sym: Symbol, tf: Timeframe): Promise<LabSource[]> {
   const step = tfSeconds(tf);
   const { unit } = parseTf(tf);
-  if (!step || isTickTf(tf) || unit === 'M') return [];
+  if (!step || isTickTf(tf)) return [];
   // (a file downloaded from the Data tab names its platform ticker itself)
   const mine = (await labFiles()).filter((f) => (f.platform ?? platformTicker(f.symbol)) === sym.ticker);
   const of = (name: string) => mine.filter((f) => f.tf === name).sort((a, b) => a.from - b.from || b.to - a.to);
+  // months from the days (1 month only: a month is not a fixed number of days)
+  if (unit === 'M') return parseTf(tf).n === 1 ? of('1d').map((file) => ({ file, step, ratio: 23, anchor: 0, month: true })) : [];
   const out: LabSource[] = of(labTf(tf)).map((file) => ({ file, step, ratio: 1, anchor: 0 }));
   for (const [name, s] of LAB_STEPS) {
     if (s >= step || step % s || (unit === 'W' && name !== '1d')) continue;
@@ -66,10 +69,12 @@ async function fetchPage(id: string, before: number, limit: number): Promise<Can
   return out;
 }
 
-function group(base: Candle[], step: number, anchor: number): Candle[] {
+const monthOf = (t: number) => { const d = new Date(t * 1000); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1) / 1000; };
+
+function group(base: Candle[], step: number, anchor: number, month = false): Candle[] {
   const out: Candle[] = [];
   for (const c of base) {
-    const t = Math.floor((c.time - anchor) / step) * step + anchor;
+    const t = month ? monthOf(c.time) : Math.floor((c.time - anchor) / step) * step + anchor;
     const last = out[out.length - 1];
     if (last && last.time === t) {
       last.high = Math.max(last.high, c.high);
@@ -96,12 +101,12 @@ class LabPager {
 
   async page(): Promise<Candle[]> {
     if (this.done) return [];
-    const { file, step, ratio, anchor } = this.src;
+    const { file, step, ratio, anchor, month } = this.src;
     const limit = PAGE_BARS * ratio;
     const base = await fetchPage(file.id, this.cursor, limit);
     if (base.length < limit) this.done = true;
     if (!base.length) return [];
-    const out = ratio === 1 ? base : group(base, step, anchor);
+    const out = ratio === 1 ? base : group(base, step, anchor, month);
     // the oldest group may miss its first bars: it comes whole with the next page
     if (ratio > 1 && !this.done && out.length > 1) out.shift();
     this.cursor = out[0].time;

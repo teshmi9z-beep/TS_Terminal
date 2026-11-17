@@ -90,6 +90,21 @@ function ColorPopover({ value, anchor, onChange, onClose }: { value: string; anc
   );
 }
 
+// a toolbar button like TradingView's (pencil, bucket, T): its icon over a bar of the colour,
+// opening the picker
+export function ColorButton({ value, onChange, title, children }: { value: string; onChange: (c: string) => void; title: string; children: React.ReactNode }) {
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  return (
+    <>
+      <button className={`dtb-btn dtb-color ${anchor ? 'on' : ''}`} title={title} onClick={(e) => setAnchor(anchor ? null : e.currentTarget.getBoundingClientRect())}>
+        {children}
+        <span className="dtb-bar" style={{ background: value }} />
+      </button>
+      {anchor && <ColorPopover value={value} anchor={anchor} onChange={onChange} onClose={() => setAnchor(null)} />}
+    </>
+  );
+}
+
 // a color swatch that opens the picker (the checkerboard shows through transparent colors)
 export function ColorSwatch({ value, onChange, title }: { value: string; onChange: (c: string) => void; title?: string }) {
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
